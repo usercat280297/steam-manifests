@@ -1,0 +1,7 @@
+node_modules/
+.env
+last_manifest_state.json
+last_build_state.json
+*.log
+*.lua
+.DS_Store
