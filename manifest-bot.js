@@ -3,23 +3,23 @@ const fs = require('fs');
 const { Octokit } = require('@octokit/rest');
 require('dotenv').config();
 
-// ⚙️ CONFIGURATION
+// ⚙️ CONFIGURATION - Optimized to avoid rate limits
 const CONFIG = {
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK_URL,
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
   GITHUB_REPO_OWNER: process.env.GITHUB_REPO_OWNER,
   GITHUB_REPO_NAME: process.env.GITHUB_REPO_NAME,
   
-  CHECK_INTERVAL: 6 * 60 * 60 * 1000,
-  MESSAGE_INTERVAL: 3 * 60 * 1000,
-  STEAM_DELAY: 3000,                    // Tăng delay lên 3s
-  STEAMDB_DELAY: 5000,                  // Delay riêng cho SteamDB 5s
-  MAX_RETRIES: 2,                       // Giảm retry để không bị ban
-  BATCH_SIZE: 50,                       // Pause sau mỗi 50 games
+  CHECK_INTERVAL: 12 * 60 * 60 * 1000,  // 12 hours
+  MESSAGE_INTERVAL: 3 * 60 * 1000,      // 3 minutes
+  STEAM_DELAY: 5000,                     // 5s between Steam API calls
+  STEAMDB_DELAY: 15000,                  // 15s for SteamDB (avoid 403)
+  MAX_RETRIES: 2,
+  BATCH_SIZE: 20,                        // Pause after every 20 games
+  BATCH_PAUSE: 60000,                    // 1 minute pause
   
   MANIFEST_FILE_PREFIX: 'manifest_',
   
-  // 🆕 User agents để rotate
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -37,8 +37,10 @@ let lastManifestIds = {};
 const STATE_FILE = 'last_manifest_state.json';
 const messageQueue = [];
 let userAgentIndex = 0;
+let steamApiSuccessCount = 0;
+let steamDbFailCount = 0;
 
-// Load games từ games.json
+// Load games
 try {
   const raw = fs.readFileSync('games.json', 'utf8');
   games = JSON.parse(raw);
@@ -67,18 +69,16 @@ function saveState() {
   }
 }
 
-// 🆕 Rotate User Agent
 function getRandomUserAgent() {
   userAgentIndex = (userAgentIndex + 1) % CONFIG.USER_AGENTS.length;
   return CONFIG.USER_AGENTS[userAgentIndex];
 }
 
 /**
- * 🆕 Method 1: Lấy từ Steam API trực tiếp (không cần SteamDB)
+ * 🎯 Method 1: Get manifests from Steam API directly (BEST - No rate limit)
  */
 async function getManifestsFromSteam(appId) {
   try {
-    // Lấy thông tin app details
     const response = await axios.get(`https://store.steampowered.com/api/appdetails?appids=${appId}&cc=us`, {
       timeout: 10000,
       headers: {
@@ -91,11 +91,10 @@ async function getManifestsFromSteam(appId) {
 
     const depots = [];
     
-    // Parse depot manifests từ Steam API
+    // Parse depot manifests from Steam API
     if (gameData.depots) {
       for (const [depotId, depotData] of Object.entries(gameData.depots)) {
         if (depotData && typeof depotData === 'object' && depotData.manifests) {
-          // Lấy public branch manifest
           const publicManifest = depotData.manifests?.public;
           if (publicManifest) {
             depots.push({
@@ -108,12 +107,12 @@ async function getManifestsFromSteam(appId) {
       }
     }
 
-    // Thêm DLC depots
+    // Add DLC depots
     if (gameData.dlc && Array.isArray(gameData.dlc)) {
-      for (const dlcAppId of gameData.dlc) {
+      for (const dlcAppId of gameData.dlc.slice(0, 10)) { // Limit to 10 DLC
         depots.push({
           depotId: `dlc_${dlcAppId}`,
-          manifestId: '0', // Placeholder
+          manifestId: '0',
           isDLC: true,
           dlcAppId: dlcAppId
         });
@@ -128,12 +127,17 @@ async function getManifestsFromSteam(appId) {
 }
 
 /**
- * 🆕 Method 2: Lấy từ SteamDB với retry và delay
+ * 🔄 Method 2: Get from SteamDB with enhanced retry logic (SLOWER)
  */
 async function getManifestsFromSteamDB(appId, retryCount = 0) {
+  // Skip if force Steam API only
+  if (process.env.FORCE_STEAM_API_ONLY === 'true') {
+    return null;
+  }
+
   try {
-    // Thêm random delay để tránh rate limit
-    const randomDelay = Math.random() * 2000 + CONFIG.STEAMDB_DELAY;
+    // Add random delay to avoid rate limit
+    const randomDelay = Math.random() * 5000 + CONFIG.STEAMDB_DELAY;
     await new Promise(resolve => setTimeout(resolve, randomDelay));
 
     const response = await axios.get(`https://steamdb.info/app/${appId}/depots/`, {
@@ -155,8 +159,8 @@ async function getManifestsFromSteamDB(appId, retryCount = 0) {
     const html = response.data;
     const depots = [];
     
-    // Parse depot information với regex cải tiến
-    const depotRegex = /depot\/(\d+)[\s\S]*?Public Branch[\s\S]*?ManifestID[:\s]+(\d+)/gi;
+    // Parse depot information
+    const depotRegex = /depot\/(\d+)[\s\S]*?Public\s+Branch[\s\S]*?ManifestID[:\s]+(\d+)/gi;
     let match;
     
     while ((match = depotRegex.exec(html)) !== null) {
@@ -167,20 +171,14 @@ async function getManifestsFromSteamDB(appId, retryCount = 0) {
       });
     }
 
-    // Parse DLC với nhiều pattern
-    const dlcPatterns = [
-      /DLC.*?(\d+).*?ManifestID[:\s]+(\d+)/gi,
-      /dlc.*?depot[:\s]+(\d+).*?manifest[:\s]+(\d+)/gi
-    ];
-
-    for (const pattern of dlcPatterns) {
-      while ((match = pattern.exec(html)) !== null) {
-        depots.push({
-          depotId: match[1],
-          manifestId: match[2],
-          isDLC: true
-        });
-      }
+    // Parse DLC
+    const dlcRegex = /DLC.*?(\d+).*?ManifestID[:\s]+(\d+)/gi;
+    while ((match = dlcRegex.exec(html)) !== null) {
+      depots.push({
+        depotId: match[1],
+        manifestId: match[2],
+        isDLC: true
+      });
     }
 
     return depots.length > 0 ? depots : null;
@@ -189,21 +187,21 @@ async function getManifestsFromSteamDB(appId, retryCount = 0) {
     if (error.response?.status === 403 && retryCount < CONFIG.MAX_RETRIES) {
       console.log(`⚠️ SteamDB 403 for ${appId}, retry ${retryCount + 1}/${CONFIG.MAX_RETRIES}...`);
       
-      // Exponential backoff với random jitter
-      const waitTime = Math.pow(2, retryCount) * 10000 + Math.random() * 5000;
+      // Exponential backoff
+      const waitTime = Math.pow(2, retryCount) * 15000 + Math.random() * 5000;
       console.log(`   ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before retry...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       
       return getManifestsFromSteamDB(appId, retryCount + 1);
     }
     
-    console.error(`⚠️ SteamDB failed for ${appId}:`, error.response?.status || error.message);
+    console.error(`❌ SteamDB failed for ${appId}:`, error.response?.status || error.message);
     return null;
   }
 }
 
 /**
- * 🆕 Method 3: Fallback - Generate mock manifests từ AppID
+ * 🎲 Method 3: Generate mock manifests as fallback
  */
 function generateMockManifests(appId, gameInfo) {
   console.log(`📦 Generating mock manifests for ${appId}`);
@@ -216,7 +214,6 @@ function generateMockManifests(appId, gameInfo) {
     }
   ];
 
-  // Thêm DLC nếu có
   if (gameInfo?.dlcCount > 0) {
     for (let i = 0; i < Math.min(gameInfo.dlcCount, 5); i++) {
       depots.push({
@@ -231,23 +228,27 @@ function generateMockManifests(appId, gameInfo) {
 }
 
 /**
- * 🆕 Smart manifest fetcher - Thử nhiều methods
+ * 🧠 Smart manifest fetcher - Try multiple methods
  */
 async function getDepotManifests(appId, gameInfo = null) {
   console.log(`🔍 Fetching manifests for AppID ${appId}...`);
   
-  // Method 1: Thử Steam API trước (nhanh nhất, ít bị chặn)
+  // Method 1: Try Steam API first (fastest, no rate limit)
   let depots = await getManifestsFromSteam(appId);
   if (depots && depots.length > 0) {
     console.log(`✅ Got ${depots.length} depots from Steam API`);
+    steamApiSuccessCount++;
     return depots;
   }
 
-  // Method 2: Thử SteamDB (chi tiết hơn nhưng dễ bị rate limit)
-  depots = await getManifestsFromSteamDB(appId);
-  if (depots && depots.length > 0) {
-    console.log(`✅ Got ${depots.length} depots from SteamDB`);
-    return depots;
+  // Method 2: Try SteamDB (detailed but rate limited)
+  if (process.env.FORCE_STEAM_API_ONLY !== 'true') {
+    depots = await getManifestsFromSteamDB(appId);
+    if (depots && depots.length > 0) {
+      console.log(`✅ Got ${depots.length} depots from SteamDB`);
+      return depots;
+    }
+    steamDbFailCount++;
   }
 
   // Method 3: Fallback - Generate mock data
@@ -256,7 +257,7 @@ async function getDepotManifests(appId, gameInfo = null) {
 }
 
 /**
- * Tạo file .lua từ manifest data
+ * 📝 Generate Lua file from manifest data
  */
 function generateLuaFile(gameName, appId, depots, reviews, dlcInfo) {
   const timestamp = new Date().toISOString();
@@ -333,7 +334,7 @@ return ManifestData`;
 }
 
 /**
- * Upload file .lua lên GitHub Releases
+ * 📤 Upload Lua file to GitHub Releases
  */
 async function uploadToGitHub(fileName, fileContent, gameName, appId) {
   try {
@@ -372,7 +373,7 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
   } catch (error) {
     console.error(`❌ GitHub upload failed:`, error.message);
     
-    // Fallback: Save to local file
+    // Fallback: Save locally
     try {
       const localDir = './manifests';
       if (!fs.existsSync(localDir)) {
@@ -397,7 +398,7 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
 }
 
 /**
- * Lấy thông tin game từ Steam API
+ * 📊 Get game info from Steam API
  */
 async function getGameInfo(appId) {
   try {
@@ -409,7 +410,6 @@ async function getGameInfo(appId) {
     });
 
     const gameData = response.data[appId]?.data;
-    
     if (!gameData) return null;
 
     let reviewText = 'N/A';
@@ -417,13 +417,11 @@ async function getGameInfo(appId) {
       reviewText = `Metacritic ${gameData.metacritic.score}%`;
     }
 
-    const dlcCount = gameData.dlc?.length || 0;
-
     return {
       headerImage: gameData.header_image || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`,
       reviews: reviewText,
       reviewCount: gameData.recommendations?.total || 0,
-      dlcCount: dlcCount
+      dlcCount: gameData.dlc?.length || 0
     };
   } catch (error) {
     return {
@@ -436,7 +434,7 @@ async function getGameInfo(appId) {
 }
 
 /**
- * Tạo Discord embed giống ảnh mẫu
+ * 💬 Create Discord embed
  */
 async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo) {
   const totalManifests = depots.length;
@@ -454,7 +452,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   return {
     embeds: [{
       author: {
-        name: "drфge đã sử dụng ++ gen",
+        name: "dreeeefge đã sử dụng ++ gen",
         icon_url: "https://cdn.discordapp.com/emojis/843169324686409749.png"
       },
       color: 0x5865F2,
@@ -521,7 +519,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
 }
 
 /**
- * Process một message từ queue
+ * 📨 Process message queue
  */
 async function processQueue() {
   if (messageQueue.length === 0) return;
@@ -550,32 +548,33 @@ async function processQueue() {
 }
 
 /**
- * Check một game và generate manifest nếu có update
+ * 🎮 Check game manifest
  */
 async function checkGameManifest(game, index, total) {
   const { name, appId } = game;
   if (!appId) return;
 
   try {
-    // 🆕 Pause sau mỗi batch để tránh rate limit
+    // Pause after every batch to avoid rate limit
     if (index % CONFIG.BATCH_SIZE === 0 && index > 0) {
-      console.log(`⏸️  Pausing 30s after ${index} games to avoid rate limit...`);
-      await new Promise(resolve => setTimeout(resolve, 30000));
+      console.log(`\n⏸️  Pausing ${CONFIG.BATCH_PAUSE / 1000}s after ${index} games to cool down...`);
+      console.log(`📊 Stats: Steam API Success: ${steamApiSuccessCount} | SteamDB Fails: ${steamDbFailCount}\n`);
+      await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_PAUSE));
     }
 
-    if (index % 50 === 0) {
-      console.log(`⏳ Progress: ${index}/${total} | Queue: ${messageQueue.length}`);
+    if (index % 10 === 0) {
+      console.log(`⏳ Progress: ${index}/${total} | Queue: ${messageQueue.length} | Success Rate: ${((steamApiSuccessCount / index) * 100).toFixed(0)}%`);
       
-      if (index % 100 === 0) {
+      if (index % 50 === 0) {
         saveState();
         console.log(`💾 Auto-saved state at ${index} games`);
       }
     }
 
-    // Step 1: Lấy thông tin game trước
+    // Get game info
     const gameInfo = await getGameInfo(appId);
     
-    // Step 2: Lấy depot manifests với smart fetcher
+    // Get depot manifests
     const depots = await getDepotManifests(appId, gameInfo);
     
     if (!depots || depots.length === 0) {
@@ -583,22 +582,30 @@ async function checkGameManifest(game, index, total) {
       return;
     }
 
-    // Step 3: Check xem có thay đổi không
+    // Check for changes
     const currentManifestHash = JSON.stringify(depots.map(d => d.manifestId).sort());
     
-    if (!lastManifestIds[name]) {
+    // 🆕 Force send on first run if enabled
+    const isFirstRun = !lastManifestIds[name];
+    
+    if (isFirstRun) {
       lastManifestIds[name] = currentManifestHash;
       console.log(`📝 Initialized manifest tracking for ${name}`);
-      return;
-    }
-
-    if (currentManifestHash === lastManifestIds[name]) {
-      return;
+      
+      // Check if force send is enabled
+      if (process.env.FORCE_FIRST_SEND === 'true') {
+        console.log(`🎭 Force sending manifest for ${name} (first run)`);
+        // Continue to generate and send
+      } else {
+        return; // Skip on first run
+      }
+    } else if (currentManifestHash === lastManifestIds[name]) {
+      return; // No changes
     }
 
     console.log(`🆕 Manifest changed for ${name}!`);
 
-    // Step 4: Tạo file .lua
+    // Generate Lua file
     const dlcInfo = {
       total: depots.filter(d => d.isDLC).length,
       valid: depots.filter(d => d.isDLC && d.manifestId && d.manifestId !== '0').length,
@@ -606,17 +613,10 @@ async function checkGameManifest(game, index, total) {
       missing: depots.filter(d => d.isDLC && (!d.manifestId || d.manifestId === '0')).length
     };
     
-    const luaContent = generateLuaFile(
-      name,
-      appId,
-      depots,
-      gameInfo?.reviews,
-      dlcInfo
-    );
-    
+    const luaContent = generateLuaFile(name, appId, depots, gameInfo?.reviews, dlcInfo);
     const fileName = `${CONFIG.MANIFEST_FILE_PREFIX}${appId}_${name.replace(/[^a-zA-Z0-9]/g, '_')}.lua`;
     
-    // Step 5: Upload file
+    // Upload file
     const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
     
     if (!uploadResult) {
@@ -624,7 +624,7 @@ async function checkGameManifest(game, index, total) {
       return;
     }
 
-    // Step 6: Thêm vào queue để gửi Discord
+    // Add to queue
     messageQueue.push({
       gameName: name,
       appId: appId,
@@ -634,7 +634,6 @@ async function checkGameManifest(game, index, total) {
     });
 
     lastManifestIds[name] = currentManifestHash;
-    
     console.log(`✅ Queued manifest for ${name} (${depots.length} depots)`);
 
   } catch (error) {
@@ -645,11 +644,15 @@ async function checkGameManifest(game, index, total) {
 }
 
 /**
- * Check tất cả games
+ * 🔄 Check all games
  */
 async function checkAllGames() {
   const startTime = Date.now();
+  steamApiSuccessCount = 0;
+  steamDbFailCount = 0;
+  
   console.log(`\n🔄 Starting manifest check for ${games.length} games...`);
+  console.log(`⏰ Estimated time: ~${Math.ceil(games.length * CONFIG.STEAM_DELAY / 1000 / 60)} minutes\n`);
   
   for (let i = 0; i < games.length; i++) {
     await checkGameManifest(games[i], i + 1, games.length);
@@ -657,17 +660,35 @@ async function checkAllGames() {
   
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
   console.log(`\n✅ Completed check in ${elapsed} minutes`);
+  console.log(`📊 Final Stats:`);
+  console.log(`   Steam API Success: ${steamApiSuccessCount}/${games.length}`);
+  console.log(`   SteamDB Fails: ${steamDbFailCount}`);
   console.log(`📬 ${messageQueue.length} manifests in queue\n`);
   
   saveState();
 }
 
+// ========================================
 // MAIN
+// ========================================
+
 (async () => {
-  console.log("🚀 Steam Manifest Generator Bot - Enhanced");
+  console.log("🚀 Steam Manifest Generator Bot - Enhanced & Fixed");
   console.log(`📊 Monitoring: ${games.length} games`);
   console.log(`⏰ Check interval: ${CONFIG.CHECK_INTERVAL / 60 / 60 / 1000} hours`);
   console.log(`📬 Discord send interval: ${CONFIG.MESSAGE_INTERVAL / 60 / 1000} minutes`);
+  console.log(`🛡️ Steam API delay: ${CONFIG.STEAM_DELAY}ms`);
+  console.log(`🛡️ SteamDB delay: ${CONFIG.STEAMDB_DELAY}ms`);
+  console.log(`⏸️  Batch pause: ${CONFIG.BATCH_PAUSE / 1000}s after every ${CONFIG.BATCH_SIZE} games`);
+  
+  if (process.env.FORCE_STEAM_API_ONLY === 'true') {
+    console.log(`⚠️ FORCE_STEAM_API_ONLY enabled - Skipping SteamDB`);
+  }
+  
+  if (process.env.FORCE_FIRST_SEND === 'true') {
+    console.log(`🎭 FORCE_FIRST_SEND enabled - Will send on first run`);
+  }
+  
   console.log(`\n⚠️  For Educational Purpose Only\n`);
 
   checkAllGames();
