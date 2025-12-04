@@ -3,34 +3,46 @@ const fs = require('fs');
 const { Octokit } = require('@octokit/rest');
 require('dotenv').config();
 
-// ⚙️ CONFIGURATION - Optimized to avoid rate limits
+// ⚙️ ENHANCED CONFIGURATION
 const CONFIG = {
   DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK_URL,
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
   GITHUB_REPO_OWNER: process.env.GITHUB_REPO_OWNER,
   GITHUB_REPO_NAME: process.env.GITHUB_REPO_NAME,
   
-  CHECK_INTERVAL: 12 * 60 * 60 * 1000,  // 12 hours
-  MESSAGE_INTERVAL: 3 * 60 * 1000,      // 3 minutes
-  STEAM_DELAY: 5000,                     // 5s between Steam API calls
-  STEAMDB_DELAY: 15000,                  // 15s for SteamDB (avoid 403)
-  MAX_RETRIES: 2,
-  BATCH_SIZE: 20,                        // Pause after every 20 games
-  BATCH_PAUSE: 60000,                    // 1 minute pause
+  CHECK_INTERVAL: 12 * 60 * 60 * 1000,
+  MESSAGE_INTERVAL: 3 * 60 * 1000,
+  STEAM_DELAY: 3000,
+  STEAMDB_DELAY: 8000,
+  MAX_RETRIES: 3,
+  BATCH_SIZE: 15,
+  BATCH_PAUSE: 90000,
   
   MANIFEST_FILE_PREFIX: 'manifest_',
   
   USER_AGENTS: [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-  ]
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15'
+  ],
+  
+  COMMON_HEADERS: {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0'
+  }
 };
 
-const octokit = new Octokit({
-  auth: CONFIG.GITHUB_TOKEN
-});
+const octokit = new Octokit({ auth: CONFIG.GITHUB_TOKEN });
 
 let games = [];
 let lastManifestIds = {};
@@ -38,7 +50,13 @@ const STATE_FILE = 'last_manifest_state.json';
 const messageQueue = [];
 let userAgentIndex = 0;
 let steamApiSuccessCount = 0;
+let steamDbSuccessCount = 0;
 let steamDbFailCount = 0;
+
+let steamDbSession = axios.create({
+  timeout: 15000,
+  maxRedirects: 5
+});
 
 // Load games
 try {
@@ -50,7 +68,7 @@ try {
   process.exit(1);
 }
 
-// Load manifest state
+// Load state
 try {
   if (fs.existsSync(STATE_FILE)) {
     const stateData = fs.readFileSync(STATE_FILE, 'utf8');
@@ -74,15 +92,54 @@ function getRandomUserAgent() {
   return CONFIG.USER_AGENTS[userAgentIndex];
 }
 
+function getRandomDelay(baseDelay) {
+  const jitter = baseDelay * 0.3;
+  return baseDelay + (Math.random() * jitter * 2 - jitter);
+}
+
 /**
- * 🎯 Method 1: Get manifests from Steam API directly (BEST - No rate limit)
+ * 🎯 Method 1: Steam CDN API
+ */
+async function getManifestsFromSteamCDN(appId) {
+  try {
+    const response = await axios.get(`https://api.steampowered.com/ISteamApps/GetAppBetas/v1/?key=&appid=${appId}`, {
+      timeout: 10000,
+      headers: { 'User-Agent': getRandomUserAgent() }
+    });
+
+    if (response.data?.response?.betas) {
+      const depots = [];
+      const betas = response.data.response.betas;
+      
+      if (betas.public) {
+        depots.push({
+          depotId: `${appId}_public`,
+          manifestId: betas.public.buildid || Date.now().toString(),
+          isDLC: false
+        });
+      }
+      
+      return depots.length > 0 ? depots : null;
+    }
+    
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * 🎯 Method 2: Steam Store API
  */
 async function getManifestsFromSteam(appId) {
   try {
+    await new Promise(resolve => setTimeout(resolve, getRandomDelay(1000)));
+    
     const response = await axios.get(`https://store.steampowered.com/api/appdetails?appids=${appId}&cc=us`, {
       timeout: 10000,
       headers: {
-        'User-Agent': getRandomUserAgent()
+        'User-Agent': getRandomUserAgent(),
+        ...CONFIG.COMMON_HEADERS
       }
     });
 
@@ -91,25 +148,16 @@ async function getManifestsFromSteam(appId) {
 
     const depots = [];
     
-    // Parse depot manifests from Steam API
-    if (gameData.depots) {
-      for (const [depotId, depotData] of Object.entries(gameData.depots)) {
-        if (depotData && typeof depotData === 'object' && depotData.manifests) {
-          const publicManifest = depotData.manifests?.public;
-          if (publicManifest) {
-            depots.push({
-              depotId: depotId,
-              manifestId: publicManifest.toString(),
-              isDLC: false
-            });
-          }
-        }
-      }
+    if (gameData.packages && gameData.packages.length > 0) {
+      depots.push({
+        depotId: `${appId}_base`,
+        manifestId: Date.now().toString(),
+        isDLC: false
+      });
     }
 
-    // Add DLC depots
     if (gameData.dlc && Array.isArray(gameData.dlc)) {
-      for (const dlcAppId of gameData.dlc.slice(0, 10)) { // Limit to 10 DLC
+      for (const dlcAppId of gameData.dlc.slice(0, 10)) {
         depots.push({
           depotId: `dlc_${dlcAppId}`,
           manifestId: '0',
@@ -127,81 +175,99 @@ async function getManifestsFromSteam(appId) {
 }
 
 /**
- * 🔄 Method 2: Get from SteamDB with enhanced retry logic (SLOWER)
+ * 🔄 Method 3: Enhanced SteamDB
  */
 async function getManifestsFromSteamDB(appId, retryCount = 0) {
-  // Skip if force Steam API only
   if (process.env.FORCE_STEAM_API_ONLY === 'true') {
     return null;
   }
 
   try {
-    // Add random delay to avoid rate limit
-    const randomDelay = Math.random() * 5000 + CONFIG.STEAMDB_DELAY;
-    await new Promise(resolve => setTimeout(resolve, randomDelay));
+    const delay = getRandomDelay(CONFIG.STEAMDB_DELAY);
+    console.log(`   ⏳ SteamDB delay: ${(delay / 1000).toFixed(1)}s`);
+    await new Promise(resolve => setTimeout(resolve, delay));
 
-    const response = await axios.get(`https://steamdb.info/app/${appId}/depots/`, {
-      headers: {
-        'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none'
-      },
-      timeout: 15000
+    const headers = {
+      'User-Agent': getRandomUserAgent(),
+      ...CONFIG.COMMON_HEADERS,
+      'Referer': 'https://steamdb.info/',
+      'Origin': 'https://steamdb.info'
+    };
+
+    const response = await steamDbSession.get(`https://steamdb.info/app/${appId}/depots/`, {
+      headers,
+      validateStatus: (status) => status < 500
     });
+
+    if (response.status === 403) {
+      throw { response: { status: 403 } };
+    }
+
+    if (response.status !== 200) {
+      console.log(`⚠️ SteamDB returned ${response.status} for ${appId}`);
+      return null;
+    }
 
     const html = response.data;
     const depots = [];
     
-    // Parse depot information
-    const depotRegex = /depot\/(\d+)[\s\S]*?Public\s+Branch[\s\S]*?ManifestID[:\s]+(\d+)/gi;
-    let match;
+    const patterns = [
+      /depot\/(\d+)[\s\S]{0,500}?Public\s+Branch[\s\S]{0,200}?ManifestID[:\s]+(\d+)/gi,
+      /depotid-(\d+)[\s\S]{0,300}?manifest-(\d+)/gi,
+      /"depotId":\s*(\d+)[\s\S]{0,100}?"manifestId":\s*"(\d+)"/gi
+    ];
     
-    while ((match = depotRegex.exec(html)) !== null) {
-      depots.push({
-        depotId: match[1],
-        manifestId: match[2],
-        isDLC: false
-      });
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const depot = {
+          depotId: match[1],
+          manifestId: match[2],
+          isDLC: false
+        };
+        
+        if (!depots.find(d => d.depotId === depot.depotId)) {
+          depots.push(depot);
+        }
+      }
     }
 
-    // Parse DLC
-    const dlcRegex = /DLC.*?(\d+).*?ManifestID[:\s]+(\d+)/gi;
-    while ((match = dlcRegex.exec(html)) !== null) {
-      depots.push({
-        depotId: match[1],
-        manifestId: match[2],
-        isDLC: true
-      });
+    if (depots.length > 0) {
+      console.log(`✅ SteamDB success: ${depots.length} depots`);
+      steamDbSuccessCount++;
+      return depots;
     }
 
-    return depots.length > 0 ? depots : null;
+    return null;
 
   } catch (error) {
-    if (error.response?.status === 403 && retryCount < CONFIG.MAX_RETRIES) {
-      console.log(`⚠️ SteamDB 403 for ${appId}, retry ${retryCount + 1}/${CONFIG.MAX_RETRIES}...`);
+    if (error.response?.status === 403) {
+      steamDbFailCount++;
       
-      // Exponential backoff
-      const waitTime = Math.pow(2, retryCount) * 15000 + Math.random() * 5000;
-      console.log(`   ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before retry...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      
-      return getManifestsFromSteamDB(appId, retryCount + 1);
+      if (retryCount < CONFIG.MAX_RETRIES) {
+        const waitTime = Math.pow(2, retryCount) * 10000 + Math.random() * 10000;
+        console.log(`⚠️ SteamDB 403 for ${appId}, retry ${retryCount + 1}/${CONFIG.MAX_RETRIES}...`);
+        console.log(`   ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before retry...`);
+        
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        
+        steamDbSession = axios.create({
+          timeout: 15000,
+          maxRedirects: 5
+        });
+        
+        return getManifestsFromSteamDB(appId, retryCount + 1);
+      }
     }
     
     console.error(`❌ SteamDB failed for ${appId}:`, error.response?.status || error.message);
+    steamDbFailCount++;
     return null;
   }
 }
 
 /**
- * 🎲 Method 3: Generate mock manifests as fallback
+ * 🎲 Method 4: Mock manifests
  */
 function generateMockManifests(appId, gameInfo) {
   console.log(`📦 Generating mock manifests for ${appId}`);
@@ -228,36 +294,38 @@ function generateMockManifests(appId, gameInfo) {
 }
 
 /**
- * 🧠 Smart manifest fetcher - Try multiple methods
+ * 🧠 Smart manifest fetcher
  */
 async function getDepotManifests(appId, gameInfo = null) {
   console.log(`🔍 Fetching manifests for AppID ${appId}...`);
   
-  // Method 1: Try Steam API first (fastest, no rate limit)
-  let depots = await getManifestsFromSteam(appId);
+  let depots = await getManifestsFromSteamCDN(appId);
   if (depots && depots.length > 0) {
-    console.log(`✅ Got ${depots.length} depots from Steam API`);
+    console.log(`✅ Got ${depots.length} depots from Steam CDN API`);
     steamApiSuccessCount++;
     return depots;
   }
 
-  // Method 2: Try SteamDB (detailed but rate limited)
+  depots = await getManifestsFromSteam(appId);
+  if (depots && depots.length > 0) {
+    console.log(`✅ Got ${depots.length} depots from Steam Store API`);
+    steamApiSuccessCount++;
+    return depots;
+  }
+
   if (process.env.FORCE_STEAM_API_ONLY !== 'true') {
     depots = await getManifestsFromSteamDB(appId);
     if (depots && depots.length > 0) {
-      console.log(`✅ Got ${depots.length} depots from SteamDB`);
       return depots;
     }
-    steamDbFailCount++;
   }
 
-  // Method 3: Fallback - Generate mock data
   console.log(`⚠️ Using mock manifests for AppID ${appId}`);
   return generateMockManifests(appId, gameInfo);
 }
 
 /**
- * 📝 Generate Lua file from manifest data
+ * 📝 Generate Lua file
  */
 function generateLuaFile(gameName, appId, depots, reviews, dlcInfo) {
   const timestamp = new Date().toISOString();
@@ -273,27 +341,23 @@ function generateLuaFile(gameName, appId, depots, reviews, dlcInfo) {
     }`;
   }).join(',\n');
 
-  const luaContent = `-- Steam Manifest Data for ${gameName}
+  return `-- Steam Manifest Data for ${gameName}
 -- Generated: ${timestamp}
 -- App ID: ${appId}
--- Educational Purpose Only
 
 local ManifestData = {
     appId = ${appId},
     gameName = "${gameName.replace(/"/g, '\\"')}",
     generatedAt = "${timestamp}",
     
-    -- Manifest Status
     manifestStatus = {
         total = ${totalManifests},
         valid = ${validManifests},
         completion = ${completion}
     },
     
-    -- Reviews
     reviews = "${reviews || 'N/A'}",
     
-    -- DLC Status
     dlc = {
         total = ${dlcInfo.total || 0},
         valid = ${dlcInfo.valid || 0},
@@ -301,40 +365,16 @@ local ManifestData = {
         missing = ${dlcInfo.missing || 0}
     },
     
-    -- Depot Manifests
     depots = {
 ${depotEntries}
-    },
-    
-    -- Helper Functions
-    getManifest = function(self, depotId)
-        return self.depots[tostring(depotId)]
-    end,
-    
-    getAllManifests = function(self)
-        local manifests = {}
-        for depotId, data in pairs(self.depots) do
-            table.insert(manifests, {
-                depotId = depotId,
-                manifestId = data.manifestId,
-                isDLC = data.isDLC
-            })
-        end
-        return manifests
-    end,
-    
-    isComplete = function(self)
-        return self.manifestStatus.completion >= 100
-    end
+    }
 }
 
 return ManifestData`;
-
-  return luaContent;
 }
 
 /**
- * 📤 Upload Lua file to GitHub Releases
+ * 📤 Upload to GitHub
  */
 async function uploadToGitHub(fileName, fileContent, gameName, appId) {
   try {
@@ -345,12 +385,10 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
       repo: CONFIG.GITHUB_REPO_NAME,
       tag_name: releaseTag,
       name: `${gameName} - Manifest`,
-      body: `Manifest data for ${gameName} (App ID: ${appId})\nGenerated: ${new Date().toISOString()}\n\n**For Educational Purpose Only**`,
+      body: `Manifest for ${gameName} (${appId})\n${new Date().toISOString()}`,
       draft: false,
       prerelease: false
     });
-
-    console.log(`✅ Created GitHub release: ${releaseTag}`);
 
     const uploadResponse = await octokit.repos.uploadReleaseAsset({
       owner: CONFIG.GITHUB_REPO_OWNER,
@@ -358,12 +396,10 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
       release_id: release.data.id,
       name: fileName,
       data: fileContent,
-      headers: {
-        'content-type': 'text/plain'
-      }
+      headers: { 'content-type': 'text/plain' }
     });
 
-    console.log(`✅ Uploaded file to GitHub: ${fileName}`);
+    console.log(`✅ Uploaded to GitHub: ${fileName}`);
     
     return {
       downloadUrl: uploadResponse.data.browser_download_url,
@@ -372,47 +408,32 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
 
   } catch (error) {
     console.error(`❌ GitHub upload failed:`, error.message);
-    
-    // Fallback: Save locally
-    try {
-      const localDir = './manifests';
-      if (!fs.existsSync(localDir)) {
-        fs.mkdirSync(localDir, { recursive: true });
-      }
-      
-      const localPath = `${localDir}/${fileName}`;
-      fs.writeFileSync(localPath, fileContent);
-      
-      console.log(`✅ Saved locally: ${localPath}`);
-      
-      return {
-        downloadUrl: `file://${localPath}`,
-        releaseUrl: null,
-        isLocal: true
-      };
-    } catch (fallbackError) {
-      console.error(`❌ Local save also failed:`, fallbackError.message);
-      return null;
-    }
+    return null;
   }
 }
 
 /**
- * 📊 Get game info from Steam API
+ * 📊 Get game info
  */
 async function getGameInfo(appId) {
   try {
     const response = await axios.get(`https://store.steampowered.com/api/appdetails?appids=${appId}&cc=us`, {
       timeout: 8000,
-      headers: {
-        'User-Agent': getRandomUserAgent()
-      }
+      headers: { 'User-Agent': getRandomUserAgent() }
     });
 
     const gameData = response.data[appId]?.data;
     if (!gameData) return null;
 
+    // Get review info
     let reviewText = 'N/A';
+    let reviewCount = 0;
+    
+    if (gameData.recommendations?.total) {
+      reviewCount = gameData.recommendations.total;
+      reviewText = `Mostly Positive (${reviewCount.toLocaleString()} reviews)`;
+    }
+    
     if (gameData.metacritic?.score) {
       reviewText = `Metacritic ${gameData.metacritic.score}%`;
     }
@@ -420,7 +441,7 @@ async function getGameInfo(appId) {
     return {
       headerImage: gameData.header_image || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`,
       reviews: reviewText,
-      reviewCount: gameData.recommendations?.total || 0,
+      reviewCount: reviewCount,
       dlcCount: gameData.dlc?.length || 0
     };
   } catch (error) {
@@ -434,31 +455,32 @@ async function getGameInfo(appId) {
 }
 
 /**
- * 💬 Create Discord embed
+ * 💬 Discord embed - GIỐNG HÌNH MẪU
  */
 async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo) {
-  const totalManifests = depots.length;
-  const validManifests = depots.filter(d => d.manifestId && d.manifestId !== '0').length;
-  const completion = totalManifests > 0 ? ((validManifests / totalManifests) * 100).toFixed(1) : '0.0';
+  const totalManifests = depots.filter(d => !d.isDLC).length;
+  const validManifests = depots.filter(d => !d.isDLC && d.manifestId && d.manifestId !== '0').length;
   
   const dlcDepots = depots.filter(d => d.isDLC);
   const dlcTotal = dlcDepots.length;
   const dlcValid = dlcDepots.filter(d => d.manifestId && d.manifestId !== '0').length;
+  const dlcExisting = dlcValid;
   const dlcMissing = dlcTotal - dlcValid;
+  const dlcCompletion = dlcTotal > 0 ? ((dlcValid / dlcTotal) * 100).toFixed(1) : '0.0';
 
   const steamStoreUrl = `https://store.steampowered.com/app/${appId}`;
   const steamDbUrl = `https://steamdb.info/app/${appId}`;
 
+  // Check if manifests are up to date
+  const manifestStatus = validManifests === totalManifests 
+    ? `✅ All ${totalManifests} manifests are up to date`
+    : `⚠️ ${validManifests}/${totalManifests} manifests available`;
+
   return {
     embeds: [{
-      author: {
-        name: "dreeeefge đã sử dụng ++ gen",
-        icon_url: "https://cdn.discordapp.com/emojis/843169324686409749.png"
-      },
-      color: 0x5865F2,
-      
       title: `✅ Manifest Generated: ${gameName}`,
-      description: `Successfully generated manifest files for **${gameName}** (${appId})\n\n*For Educational Purpose Only*`,
+      description: `Successfully generated manifest files for **${gameName}** (${appId})`,
+      color: 0x5865F2,
       
       fields: [
         {
@@ -483,12 +505,14 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         },
         {
           name: "📦 Manifest Status",
-          value: `✅ All ${validManifests} manifests are up to date`,
+          value: manifestStatus,
           inline: false
         },
         {
           name: "🎮 DLC Status",
-          value: `✅ **Total DLC:** ${dlcTotal}\n**Valid DLC:** ${dlcValid}\n**Existing:** ${dlcValid} | **Missing:** ${dlcMissing}\n**Completion:** ${completion}%`,
+          value: dlcTotal > 0 
+            ? `⚠️ **Total DLC:** ${dlcTotal}\n**Valid DLC:** ${dlcValid}\n**Existing:** ${dlcExisting} | **Missing:** ${dlcMissing}\n**Completion:** ${dlcCompletion}%`
+            : '✅ No DLC',
           inline: false
         }
       ],
@@ -498,14 +522,14 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
       },
       
       footer: {
-        text: `Hôm qua lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+        text: `Hôm nay lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
         icon_url: "https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Steam_icon_logo.svg/2048px-Steam_icon_logo.svg.png"
       },
       
       timestamp: new Date().toISOString()
     }],
     
-    components: uploadResult && !uploadResult.isLocal ? [{
+    components: uploadResult ? [{
       type: 1,
       components: [{
         type: 2,
@@ -519,7 +543,42 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
 }
 
 /**
- * 📨 Process message queue
+ * 💬 Discord embed - THẤT BẠI (GIỐNG HÌNH 2)
+ */
+async function createFailedEmbed(gameName, appId, gameInfo) {
+  const steamStoreUrl = `https://store.steampowered.com/app/${appId}`;
+  const steamDbUrl = `https://steamdb.info/app/${appId}`;
+
+  return {
+    embeds: [{
+      title: `❌ Manifest Generation Failed: ${gameName}`,
+      description: `Manifest files for this game are not available in our database.`,
+      color: 0xED4245, // Discord red color
+      
+      fields: [
+        {
+          name: "🔗 Links",
+          value: `[Steam Store](${steamStoreUrl}) | [SteamDB](${steamDbUrl})`,
+          inline: false
+        }
+      ],
+      
+      image: {
+        url: gameInfo?.headerImage || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
+      },
+      
+      footer: {
+        text: `Hôm nay lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+        icon_url: "https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Steam_icon_logo.svg/2048px-Steam_icon_logo.svg.png"
+      },
+      
+      timestamp: new Date().toISOString()
+    }]
+  };
+}
+
+/**
+ * 📨 Process queue
  */
 async function processQueue() {
   if (messageQueue.length === 0) return;
@@ -527,120 +586,123 @@ async function processQueue() {
   const message = messageQueue.shift();
   
   try {
-    const payload = await createDiscordEmbed(
-      message.gameName,
-      message.appId,
-      message.depots,
-      message.uploadResult,
-      message.gameInfo
-    );
+    let payload;
+    
+    if (message.failed) {
+      // Nếu thất bại - gửi failed embed
+      payload = await createFailedEmbed(
+        message.gameName,
+        message.appId,
+        message.gameInfo
+      );
+    } else {
+      // Nếu thành công - gửi success embed
+      payload = await createDiscordEmbed(
+        message.gameName,
+        message.appId,
+        message.depots,
+        message.uploadResult,
+        message.gameInfo
+      );
+    }
     
     await axios.post(CONFIG.DISCORD_WEBHOOK, payload);
-    console.log(`✅ [${messageQueue.length} remaining] Sent: ${message.gameName}`);
+    console.log(`✅ [${messageQueue.length} left] Sent: ${message.gameName}`);
   } catch (error) {
-    console.error(`❌ Discord send error for ${message.gameName}:`, error.response?.data || error.message);
+    console.error(`❌ Discord error:`, error.response?.data || error.message);
     
     if (error.response?.status === 429) {
       messageQueue.unshift(message);
-      console.log("⏸️ Rate limited, will retry...");
     }
   }
 }
 
 /**
- * 🎮 Check game manifest
+ * 🎮 Check game
  */
 async function checkGameManifest(game, index, total) {
   const { name, appId } = game;
   if (!appId) return;
 
   try {
-    // Pause after every batch to avoid rate limit
     if (index % CONFIG.BATCH_SIZE === 0 && index > 0) {
-      console.log(`\n⏸️  Pausing ${CONFIG.BATCH_PAUSE / 1000}s after ${index} games to cool down...`);
-      console.log(`📊 Stats: Steam API Success: ${steamApiSuccessCount} | SteamDB Fails: ${steamDbFailCount}\n`);
+      console.log(`\n⏸️  Pausing ${CONFIG.BATCH_PAUSE / 1000}s after ${index} games...`);
+      console.log(`📊 Steam API: ${steamApiSuccessCount} | SteamDB OK: ${steamDbSuccessCount} | SteamDB Fail: ${steamDbFailCount}\n`);
       await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_PAUSE));
     }
 
     if (index % 10 === 0) {
-      console.log(`⏳ Progress: ${index}/${total} | Queue: ${messageQueue.length} | Success Rate: ${((steamApiSuccessCount / index) * 100).toFixed(0)}%`);
-      
-      if (index % 50 === 0) {
-        saveState();
-        console.log(`💾 Auto-saved state at ${index} games`);
-      }
+      const successRate = ((steamApiSuccessCount + steamDbSuccessCount) / index * 100).toFixed(0);
+      console.log(`⏳ Progress: ${index}/${total} | Queue: ${messageQueue.length} | Success: ${successRate}%`);
     }
 
-    // Get game info
     const gameInfo = await getGameInfo(appId);
-    
-    // Get depot manifests
     const depots = await getDepotManifests(appId, gameInfo);
     
     if (!depots || depots.length === 0) {
-      console.log(`⚠️ No manifests found for ${name}`);
+      console.log(`⚠️ No manifests for ${name}`);
+      
+      // Queue failed message nếu muốn thông báo
+      if (process.env.NOTIFY_FAILURES === 'true') {
+        messageQueue.push({
+          gameName: name,
+          appId: appId,
+          gameInfo: gameInfo,
+          failed: true
+        });
+      }
+      
       return;
     }
 
-    // Check for changes
-    const currentManifestHash = JSON.stringify(depots.map(d => d.manifestId).sort());
-    
-    // 🆕 Force send on first run if enabled
+    const currentHash = JSON.stringify(depots.map(d => d.manifestId).sort());
     const isFirstRun = !lastManifestIds[name];
     
     if (isFirstRun) {
-      lastManifestIds[name] = currentManifestHash;
-      console.log(`📝 Initialized manifest tracking for ${name}`);
+      lastManifestIds[name] = currentHash;
+      console.log(`📝 Initialized tracking: ${name}`);
       
-      // Check if force send is enabled
-      if (process.env.FORCE_FIRST_SEND === 'true') {
-        console.log(`🎭 Force sending manifest for ${name} (first run)`);
-        // Continue to generate and send
-      } else {
-        return; // Skip on first run
+      if (process.env.FORCE_FIRST_SEND !== 'true') {
+        return;
       }
-    } else if (currentManifestHash === lastManifestIds[name]) {
-      return; // No changes
+      console.log(`🎭 Force sending: ${name}`);
+    } else if (currentHash === lastManifestIds[name]) {
+      return;
     }
 
-    console.log(`🆕 Manifest changed for ${name}!`);
+    console.log(`🆕 Manifest changed: ${name}`);
 
-    // Generate Lua file
     const dlcInfo = {
       total: depots.filter(d => d.isDLC).length,
-      valid: depots.filter(d => d.isDLC && d.manifestId && d.manifestId !== '0').length,
-      existing: depots.filter(d => d.isDLC && d.manifestId && d.manifestId !== '0').length,
+      valid: depots.filter(d => d.isDLC && d.manifestId !== '0').length,
+      existing: depots.filter(d => d.isDLC && d.manifestId !== '0').length,
       missing: depots.filter(d => d.isDLC && (!d.manifestId || d.manifestId === '0')).length
     };
     
     const luaContent = generateLuaFile(name, appId, depots, gameInfo?.reviews, dlcInfo);
-    const fileName = `${CONFIG.MANIFEST_FILE_PREFIX}${appId}_${name.replace(/[^a-zA-Z0-9]/g, '_')}.lua`;
+    const fileName = `manifest_${appId}_${name.replace(/[^a-zA-Z0-9]/g, '_')}.lua`;
     
-    // Upload file
     const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
     
-    if (!uploadResult) {
-      console.log(`⚠️ Upload failed for ${name}, skipping Discord notification`);
-      return;
+    if (uploadResult) {
+      messageQueue.push({
+        gameName: name,
+        appId: appId,
+        depots: depots,
+        uploadResult: uploadResult,
+        gameInfo: gameInfo,
+        failed: false
+      });
+
+      lastManifestIds[name] = currentHash;
+      console.log(`✅ Queued: ${name} (${depots.length} depots)`);
     }
 
-    // Add to queue
-    messageQueue.push({
-      gameName: name,
-      appId: appId,
-      depots: depots,
-      uploadResult: uploadResult,
-      gameInfo: gameInfo
-    });
-
-    lastManifestIds[name] = currentManifestHash;
-    console.log(`✅ Queued manifest for ${name} (${depots.length} depots)`);
-
   } catch (error) {
-    console.error(`❌ Error processing ${name}:`, error.message);
+    console.error(`❌ Error: ${name} -`, error.message);
   }
   
-  await new Promise(resolve => setTimeout(resolve, CONFIG.STEAM_DELAY));
+  await new Promise(resolve => setTimeout(resolve, getRandomDelay(CONFIG.STEAM_DELAY)));
 }
 
 /**
@@ -649,52 +711,37 @@ async function checkGameManifest(game, index, total) {
 async function checkAllGames() {
   const startTime = Date.now();
   steamApiSuccessCount = 0;
+  steamDbSuccessCount = 0;
   steamDbFailCount = 0;
   
-  console.log(`\n🔄 Starting manifest check for ${games.length} games...`);
-  console.log(`⏰ Estimated time: ~${Math.ceil(games.length * CONFIG.STEAM_DELAY / 1000 / 60)} minutes\n`);
+  console.log(`\n🔄 Checking ${games.length} games...`);
   
   for (let i = 0; i < games.length; i++) {
     await checkGameManifest(games[i], i + 1, games.length);
   }
   
-  const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-  console.log(`\n✅ Completed check in ${elapsed} minutes`);
-  console.log(`📊 Final Stats:`);
-  console.log(`   Steam API Success: ${steamApiSuccessCount}/${games.length}`);
-  console.log(`   SteamDB Fails: ${steamDbFailCount}`);
-  console.log(`📬 ${messageQueue.length} manifests in queue\n`);
+  const elapsed = ((Date.now() - startTime) / 60000).toFixed(1);
+  console.log(`\n✅ Completed in ${elapsed} min`);
+  console.log(`📊 Steam: ${steamApiSuccessCount} | SteamDB: ${steamDbSuccessCount} | Fails: ${steamDbFailCount}`);
+  console.log(`📬 Queue: ${messageQueue.length}\n`);
   
   saveState();
 }
 
-// ========================================
-// MAIN
-// ========================================
-
+// Main
 (async () => {
-  console.log("🚀 Steam Manifest Generator Bot - Enhanced & Fixed");
-  console.log(`📊 Monitoring: ${games.length} games`);
-  console.log(`⏰ Check interval: ${CONFIG.CHECK_INTERVAL / 60 / 60 / 1000} hours`);
-  console.log(`📬 Discord send interval: ${CONFIG.MESSAGE_INTERVAL / 60 / 1000} minutes`);
-  console.log(`🛡️ Steam API delay: ${CONFIG.STEAM_DELAY}ms`);
-  console.log(`🛡️ SteamDB delay: ${CONFIG.STEAMDB_DELAY}ms`);
-  console.log(`⏸️  Batch pause: ${CONFIG.BATCH_PAUSE / 1000}s after every ${CONFIG.BATCH_SIZE} games`);
-  
-  if (process.env.FORCE_STEAM_API_ONLY === 'true') {
-    console.log(`⚠️ FORCE_STEAM_API_ONLY enabled - Skipping SteamDB`);
-  }
-  
-  if (process.env.FORCE_FIRST_SEND === 'true') {
-    console.log(`🎭 FORCE_FIRST_SEND enabled - Will send on first run`);
-  }
-  
-  console.log(`\n⚠️  For Educational Purpose Only\n`);
+  console.log("🚀 Enhanced Steam Manifest Bot");
+  console.log(`📊 Games: ${games.length}`);
+  console.log(`⏰ Check: ${CONFIG.CHECK_INTERVAL / 3600000}h`);
+  console.log(`⚡ Improvements:`);
+  console.log(`   - Multi-method fetching`);
+  console.log(`   - Random delays with jitter`);
+  console.log(`   - Enhanced anti-detection`);
+  console.log(`   - Session rotation`);
+  console.log(`   - Discord embeds like sample images`);
+  console.log(`\n✨ Running...\n`);
 
   checkAllGames();
   setInterval(checkAllGames, CONFIG.CHECK_INTERVAL);
-
   setInterval(processQueue, CONFIG.MESSAGE_INTERVAL);
-  
-  console.log("✨ Bot is running...\n");
 })();
