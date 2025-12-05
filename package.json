@@ -6,7 +6,8 @@
     "api": "node api-server.js",
     "both": "concurrently \"npm run start\" \"npm run api\"",
     "dev": "nodemon manifest-bot.js",
-    "migrate-games": "node migrate-games.js"
+    "migrate-games": "node migrate-games.js",
+    "test-db": "node test-db.js"
   },
   "dependencies": {
     "@octokit/rest": "^20.0.2",
