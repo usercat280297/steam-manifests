@@ -17,14 +17,26 @@ const CONFIG = {
     STEAMDB_CHART: true,      // Top 100 games by players
     STEAM_TOP_SELLERS: true,   // Steam's top sellers
     STEAM_CHARTS: true,        // SteamCharts.com top games
+    APP_LIST: true,            // Use ISteamApps/GetAppList to collect broad candidate list
+    TAG_SEARCH: true,         // Crawl Steam tag search pages
     MANUAL_APPIDS: true        // Your custom list
   },
   
+  TARGET: parseInt(process.env.TARGET || '1000', 10), // Target number of new games to collect (verified)
   MAX_GAMES: 500,              // Maximum games to add
   DELAY: 2000,                 // Delay between requests (ms)
   
   USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 };
+
+// Tags to crawl (common Steam tags). Add/remove tags as desired.
+CONFIG.TAGS = [
+  'Action','Adventure','Indie','RPG','Strategy','Simulation','Sports','Racing','Horror','Puzzle',
+  'Casual','Early Access','Multiplayer','Co-op','Singleplayer','Shooter','Fighting','Platformer',
+  'Survival','Open World','MMO','Card Game','Sandbox','VR','Family Friendly','Visual Novel','Stealth',
+  'Roguelike','City Builder','Economy','Metroidvania'
+];
+CONFIG.TAG_PAGES = parseInt(process.env.TAG_PAGES || '4', 10); // pages per tag (50 results/page)
 
 // Existing games to avoid duplicates
 let existingGames = [];
@@ -232,6 +244,77 @@ function getManualGames() {
 }
 
 /**
+ * 🔍 Method 5: Get from Steam app list (ISteamApps/GetAppList)
+ * This retrieves Steam's global app list and returns candidate appIds (non-verified).
+ */
+async function getFromSteamAppList(target) {
+  console.log(`\n🔍 Fetching from Steam AppList (target candidates: ${target})...`);
+  try {
+    const response = await axios.get('https://api.steampowered.com/ISteamApps/GetAppList/v2/', {
+      headers: { 'User-Agent': CONFIG.USER_AGENT },
+      timeout: 20000
+    });
+
+    const apps = response.data.applist?.apps || [];
+    const games = [];
+
+    for (let i = 0; i < apps.length && games.length < target; i++) {
+      const app = apps[i];
+      const appId = parseInt(app.appid, 10);
+      if (!appId || existingAppIds.has(appId)) continue;
+
+      games.push({ name: app.name || String(appId), appId });
+      existingAppIds.add(appId);
+    }
+
+    console.log(`✅ Collected ${games.length} candidate apps from AppList`);
+    return games;
+  } catch (error) {
+    console.error(`❌ AppList failed:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * 🔍 Method 6: Crawl Steam tag search results
+ * Uses the search/results AJAX endpoint to retrieve HTML fragments per tag.
+ */
+async function getFromSteamTag(tag, pages = 3) {
+  console.log(`\n🔍 Crawling tag: ${tag} (pages ${pages})`);
+  const results = [];
+  try {
+    for (let p = 0; p < pages; p++) {
+      const start = p * 50;
+      const url = `https://store.steampowered.com/search/results/?query&start=${start}&count=50&tags=${encodeURIComponent(tag)}&cc=US`;
+      const resp = await axios.get(url, { headers: { 'User-Agent': CONFIG.USER_AGENT }, timeout: 15000 });
+      const html = resp.data.results_html || resp.data;
+      const $ = cheerio.load(html);
+
+      $('a.search_result_row').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        const m = href.match(/\/app\/(\d+)/);
+        const name = $(el).find('.title').text().trim() || $(el).attr('data-ds-appid') || '';
+        if (m) {
+          const appId = parseInt(m[1], 10);
+          if (appId && !existingAppIds.has(appId)) {
+            results.push({ name: name || String(appId), appId });
+            existingAppIds.add(appId);
+          }
+        }
+      });
+
+      // small delay between pages
+      await new Promise(r => setTimeout(r, 800));
+    }
+    console.log(`✅ Tag ${tag}: found ${results.length} candidates`);
+    return results;
+  } catch (err) {
+    console.error(`❌ Tag ${tag} failed:`, err.message);
+    return results;
+  }
+}
+
+/**
  * ✅ Verify game exists on Steam
  */
 async function verifyGame(appId) {
@@ -315,6 +398,32 @@ function saveGames(allGames) {
 }
 
 /**
+ * 💾 Append verified entries to games-expanded.json
+ */
+function saveGamesToExpanded(newEntries) {
+  let expanded = [];
+  try {
+    const raw = fs.readFileSync('games-expanded.json', 'utf8');
+    expanded = JSON.parse(raw);
+  } catch (err) {
+    expanded = [];
+  }
+
+  const map = new Map(expanded.map(g => [g.appId, g]));
+  newEntries.forEach(e => map.set(e.appId, e));
+
+  const merged = Array.from(map.values());
+  merged.sort((a, b) => a.appId - b.appId);
+
+  const backupFile = `games-expanded.json.backup.${Date.now()}`;
+  fs.writeFileSync(backupFile, JSON.stringify(expanded, null, 2));
+  console.log(`\n💾 Backup saved: ${backupFile}`);
+
+  fs.writeFileSync('games-expanded.json', JSON.stringify(merged, null, 2));
+  console.log(`\n✅ Appended ${newEntries.length} entries to games-expanded.json (total ${merged.length})`);
+}
+
+/**
  * 🔍 Main function
  */
 async function main() {
@@ -345,6 +454,24 @@ async function main() {
     const steamcharts = await getFromSteamCharts();
     allNewGames.push(...steamcharts);
   }
+
+  if (CONFIG.SOURCES.APP_LIST) {
+    // Collect a larger pool of candidates from the global app list (may include non-games)
+    const candidates = await getFromSteamAppList(Math.max(CONFIG.TARGET, 2000));
+    allNewGames.push(...candidates);
+  }
+
+  if (CONFIG.SOURCES.TAG_SEARCH) {
+    console.log('\n🔍 Starting tag-based crawling...');
+    for (const tag of CONFIG.TAGS) {
+      const found = await getFromSteamTag(tag, CONFIG.TAG_PAGES);
+      allNewGames.push(...found);
+      // stop early if we already have plenty of candidates
+      if (allNewGames.length >= CONFIG.TARGET * 3) break;
+      // small pause between tags
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
   
   console.log(`\n📊 Total new games found: ${allNewGames.length}`);
   
@@ -355,22 +482,25 @@ async function main() {
   
   // Optional: Verify games (recommended but slow)
   const verifyGamesPrompt = process.env.SKIP_VERIFY !== 'true';
-  
-  let finalGames = allNewGames;
+
+  let finalGames = [];
   if (verifyGamesPrompt) {
-    finalGames = await cleanAndVerifyGames(allNewGames.slice(0, 100)); // Limit to 100 for verification
+    const candidates = allNewGames;
+    const batchSize = 100;
+    for (let i = 0; i < candidates.length && finalGames.length < CONFIG.TARGET; i += batchSize) {
+      const batch = candidates.slice(i, i + batchSize);
+      const verified = await cleanAndVerifyGames(batch);
+      finalGames.push(...verified);
+      console.log(`📈 Verified so far: ${finalGames.length}/${CONFIG.TARGET}`);
+      if (finalGames.length >= CONFIG.TARGET) break;
+    }
+    finalGames = finalGames.slice(0, CONFIG.TARGET);
+  } else {
+    finalGames = allNewGames.slice(0, CONFIG.TARGET);
   }
-  
-  // Merge with existing
-  const allGames = [...existingGames, ...finalGames];
-  
-  // Remove duplicates
-  const uniqueGames = Array.from(
-    new Map(allGames.map(game => [game.appId, game])).values()
-  );
-  
-  // Save
-  saveGames(uniqueGames);
+
+  // Append verified entries to games-expanded.json (merge later)
+  saveGamesToExpanded(finalGames);
   
   console.log("\n✨ Done!");
 }
