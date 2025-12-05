@@ -118,6 +118,80 @@ const octokit = new Octokit({
   baseUrl: 'https://api.github.com'
 });
 
+// Optional: lightweight control server (used to trigger processing without restart)
+// Set ADMIN_TOKEN in .env to enable secure control endpoint.
+let controlServer = null;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
+const DATABASE_URL = process.env.DATABASE_URL || null;
+let dbPool = null;
+
+async function initDb() {
+  try {
+    const { Pool } = require('pg');
+    dbPool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
+    // Create table if not exists
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS games (
+        appid BIGINT PRIMARY KEY,
+        name TEXT NOT NULL,
+        meta JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    console.log('🔌 Connected to DATABASE');
+  } catch (err) {
+    console.error('❌ DB init error:', err.message || err);
+    dbPool = null;
+  }
+}
+
+async function loadGamesFromDb() {
+  if (!dbPool) return [];
+  try {
+    const res = await dbPool.query('SELECT appid AS "appId", name, meta FROM games ORDER BY created_at');
+    const rows = res.rows.map(r => ({ name: r.name, appId: Number(r.appId), ...(r.meta || {}) }));
+    console.log(`📊 Loaded ${rows.length} games from DB`);
+    return rows;
+  } catch (err) {
+    console.error('❌ DB load error:', err.message || err);
+    return [];
+  }
+}
+
+async function insertGameToDb(game) {
+  if (!dbPool) throw new Error('DB not initialized');
+  const { name, appId, ...meta } = game;
+  try {
+    await dbPool.query(
+      `INSERT INTO games(appid, name, meta) VALUES($1, $2, $3)
+       ON CONFLICT (appid) DO UPDATE SET name = EXCLUDED.name, meta = EXCLUDED.meta`,
+      [String(appId), name, Object.keys(meta).length ? meta : null]
+    );
+    return true;
+  } catch (err) {
+    console.error('❌ DB insert error:', err.message || err);
+    return false;
+  }
+}
+
+// Import existing games.json into DB (one-time helper)
+async function importGamesJsonToDb() {
+  if (!dbPool) throw new Error('DB not initialized');
+  try {
+    const raw = fs.readFileSync('games.json', 'utf8');
+    const list = JSON.parse(raw);
+    for (const g of list) {
+      if (g && g.appId) await insertGameToDb(g);
+    }
+    console.log('✅ Imported games.json into DB');
+  } catch (err) {
+    console.error('❌ Import error:', err.message || err);
+  }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎯 GLOBAL STATE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -155,18 +229,23 @@ let steamDbSession = axios.create({
 // 📚 DATA LOADING
 // ═══════════════════════════════════════════════════════════════════════════
 
-try {
-  const raw = fs.readFileSync('games.json', 'utf8');
-  games = JSON.parse(raw);
-  console.log(`📊 Loaded ${games.length} games`);
-  
-  const invalidGames = games.filter(g => !g.name || !g.appId);
-  if (invalidGames.length > 0) {
-    console.warn(`⚠️  ${invalidGames.length} invalid games`);
+if (DATABASE_URL) {
+  console.log('ℹ️ DATABASE_URL detected — games will be loaded from the database at startup');
+  games = [];
+} else {
+  try {
+    const raw = fs.readFileSync('games.json', 'utf8');
+    games = JSON.parse(raw);
+    console.log(`📊 Loaded ${games.length} games`);
+    
+    const invalidGames = games.filter(g => !g.name || !g.appId);
+    if (invalidGames.length > 0) {
+      console.warn(`⚠️  ${invalidGames.length} invalid games`);
+    }
+  } catch (error) {
+    console.error("❌ Error reading games.json:", error.message);
+    process.exit(1);
   }
-} catch (error) {
-  console.error("❌ Error reading games.json:", error.message);
-  process.exit(1);
 }
 
 try {
@@ -203,6 +282,81 @@ function saveState() {
     console.error("❌ Save error:", error.message);
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 🔁 DYNAMIC GAMES WATCHER
+// ═══════════════════════════════════════════════════════════════════════
+// Watch `games.json` and only process newly added or updated games so a
+// full restart isn't required. This uses a simple diff by `appId`.
+let gamesIndexByApp = () => {
+  const map = new Map();
+  for (const g of games) if (g && g.appId) map.set(String(g.appId), g);
+  return map;
+};
+
+function findNewOrUpdatedGames(newList) {
+  const result = { added: [], updated: [] };
+  const oldMap = gamesIndexByApp();
+  for (const g of newList) {
+    if (!g || !g.appId) continue;
+    const id = String(g.appId);
+    const old = oldMap.get(id);
+    if (!old) {
+      result.added.push(g);
+    } else {
+      // simple shallow compare (name change or other props)
+      if (JSON.stringify(old) !== JSON.stringify(g)) {
+        result.updated.push(g);
+      }
+    }
+  }
+  return result;
+}
+
+// Watch file with debounce
+let gamesWatchTimer = null;
+fs.watchFile('games.json', { interval: 1000 }, (curr, prev) => {
+  if (gamesWatchTimer) return;
+  gamesWatchTimer = setTimeout(async () => {
+    gamesWatchTimer = null;
+    try {
+      const raw = fs.readFileSync('games.json', 'utf8');
+      const newGames = JSON.parse(raw);
+      const { added, updated } = findNewOrUpdatedGames(newGames);
+      if (added.length === 0 && updated.length === 0) return;
+      console.log(`\n🔔 games.json changed: ${added.length} added, ${updated.length} updated`);
+
+      // Merge - keep order: append new ones at end
+      const oldMap = gamesIndexByApp();
+      for (const g of newGames) {
+        if (!g || !g.appId) continue;
+        const id = String(g.appId);
+        if (!oldMap.has(id)) games.push(g);
+        else {
+          // replace existing entry in-place
+          const idx = games.findIndex(x => String(x.appId) === id);
+          if (idx !== -1) games[idx] = g;
+        }
+      }
+
+      // Trigger processing for added/updated games
+      const total = games.length;
+      for (const g of [...added, ...updated]) {
+        try {
+          console.log(`➡ Triggering immediate processing: ${g.name} (${g.appId})`);
+          // run checkGameManifest in background without blocking main scan
+          checkGameManifest(g, games.findIndex(x => x.appId === g.appId) + 1, total).catch(err => console.error(err));
+        } catch (err) {
+          console.error('Error triggering game processing:', err.message || err);
+        }
+      }
+
+    } catch (err) {
+      console.error('Watcher error reading games.json:', err.message || err);
+    }
+  }, 500);
+});
+
 
 function autoSaveState(currentIndex, total) {
   if (currentIndex % CONFIG.SAVE_STATE_INTERVAL === 0) {
@@ -1669,6 +1823,173 @@ async function checkAllGames() {
   // Start queue processor
   const queueInterval = setInterval(processQueue, CONFIG.MESSAGE_INTERVAL);
   console.log(`📨 Queue processor started (${CONFIG.MESSAGE_INTERVAL / 1000}s)\n`);
+
+  // If DATABASE_URL is set, initialize DB and load games from DB
+  if (DATABASE_URL) {
+    await initDb();
+    // Optional one-time import from games.json if IMPORT_GAMES_JSON is true
+    if (process.env.IMPORT_GAMES_JSON === 'true') {
+      await importGamesJsonToDb();
+    }
+    const dbGames = await loadGamesFromDb();
+    if (dbGames && dbGames.length > 0) {
+      games = dbGames;
+    }
+  }
+
+  // Optional control endpoint: use POST /process { "appId": 12345 } to trigger a single processing run
+  // Secured by ADMIN_TOKEN env var. If ADMIN_TOKEN is not set, HTTP server will not start.
+  if (ADMIN_TOKEN) {
+    try {
+      const express = require('express');
+      const bodyParser = require('body-parser');
+      const app = express();
+      app.use(bodyParser.json());
+
+      app.post('/process', async (req, res) => {
+        try {
+          const token = req.headers['x-admin-token'] || req.query.token || req.body.token;
+          if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+          const appId = req.body.appId || req.query.appId;
+          if (!appId) return res.status(400).json({ error: 'appId required' });
+
+          const game = games.find(g => String(g.appId) === String(appId));
+          if (!game) return res.status(404).json({ error: 'Game not found in games.json' });
+
+          // Trigger processing (do not block HTTP response)
+          checkGameManifest(game, games.findIndex(g => String(g.appId) === String(appId)) + 1, games.length)
+            .then(() => console.log(`Control: processed ${game.name} (${appId})`))
+            .catch(err => console.error('Control processing error:', err));
+
+          res.json({ status: 'queued', appId });
+        } catch (err) {
+          res.status(500).json({ error: err.message });
+        }
+      });
+
+      // POST /games - add a new game (persists to DB if configured, otherwise to games.json)
+      app.post('/games', async (req, res) => {
+        try {
+          const token = req.headers['x-admin-token'] || req.query.token || req.body.token;
+          if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+
+          const { name, appId } = req.body;
+          if (!name || !appId) return res.status(400).json({ error: 'name and appId required' });
+
+          const gameObj = { name: String(name), appId: Number(appId) };
+
+          if (DATABASE_URL && dbPool) {
+            const ok = await insertGameToDb(gameObj);
+            if (!ok) return res.status(500).json({ error: 'DB insert failed' });
+            // reload games list from DB
+            games = await loadGamesFromDb();
+          } else {
+            // append to games.json safely
+            try {
+              const raw = fs.existsSync('games.json') ? fs.readFileSync('games.json','utf8') : '[]';
+              const arr = JSON.parse(raw);
+              if (!arr.find(g => String(g.appId) === String(appId))) {
+                arr.push(gameObj);
+                fs.writeFileSync('games.json', JSON.stringify(arr, null, 2),'utf8');
+                games.push(gameObj);
+              }
+            } catch (err) {
+              return res.status(500).json({ error: err.message });
+            }
+          }
+
+          // Trigger immediate processing in background
+          checkGameManifest(gameObj, games.findIndex(g => String(g.appId) === String(appId)) + 1, games.length)
+            .then(() => console.log(`Control: processed ${gameObj.name} (${appId})`))
+            .catch(err => console.error('Control processing error:', err));
+
+          return res.json({ status: 'queued', appId });
+        } catch (err) {
+          return res.status(500).json({ error: err.message });
+        }
+      });
+
+      // GET /api/games - list games (from DB if used)
+      app.get('/api/games', async (req, res) => {
+        try {
+          const token = req.headers['x-admin-token'] || req.query.token;
+          if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+          if (DATABASE_URL && dbPool) {
+            const list = await loadGamesFromDb();
+            return res.json(list);
+          }
+          return res.json(games);
+        } catch (err) {
+          return res.status(500).json({ error: err.message });
+        }
+      });
+
+      // Simple admin UI
+      app.get('/admin', (req, res) => {
+        const token = req.query.token;
+        if (!token || token !== ADMIN_TOKEN) return res.status(403).send('Forbidden');
+
+        const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Manifest Bot Admin</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;margin:20px;background:#111;color:#eee}input,button,textarea{font-size:14px} .game{padding:8px;border-bottom:1px solid #222}</style>
+</head>
+<body>
+  <h2>Manifest Bot - Admin</h2>
+  <p>Add a game or force processing an existing game. Token already provided.</p>
+
+  <h3>Add Game</h3>
+  <form id="addForm">
+    <label>Name: <input id="name" required></label><br><br>
+    <label>AppID: <input id="appId" required></label><br><br>
+    <button type="submit">Add & Process</button>
+  </form>
+
+  <h3>Games</h3>
+  <div id="games"></div>
+
+  <script>
+    const token = encodeURIComponent('${ADMIN_TOKEN}');
+    async function load(){
+      const r = await fetch('/api/games?token='+token, {headers:{'x-admin-token':'${ADMIN_TOKEN}'}});
+      const list = await r.json();
+      const box = document.getElementById('games'); box.innerHTML='';
+      list.forEach(g=>{
+        const d=document.createElement('div'); d.className='game';
+        d.innerHTML = '<b>' + (g.name || '') + '</b> (' + (g.appId || '') + ') <button data-app="' + (g.appId || '') + '">Force</button>';
+        const btn = d.querySelector('button'); btn.onclick = async ()=>{
+          btn.disabled=true; btn.textContent='Queued';
+          await fetch('/process?token='+token, {method:'POST',headers:{'Content-Type':'application/json','x-admin-token':'${ADMIN_TOKEN}'},body:JSON.stringify({appId:g.appId})});
+          setTimeout(()=>{btn.disabled=false; btn.textContent='Force'},1000);
+        };
+        box.appendChild(d);
+      });
+    }
+    document.getElementById('addForm').onsubmit = async (e)=>{
+      e.preventDefault();
+      const name = document.getElementById('name').value; const appId = document.getElementById('appId').value;
+      const resp = await fetch('/games?token='+token, {method:'POST', headers:{'Content-Type':'application/json','x-admin-token':'${ADMIN_TOKEN}'}, body: JSON.stringify({name, appId})});
+      const j = await resp.json();
+      alert(JSON.stringify(j));
+      load();
+    };
+    load();
+  </script>
+</body>
+</html>`;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      });
+
+      const port = process.env.CONTROL_PORT || 3000;
+      controlServer = app.listen(port, () => console.log(`🔧 Control server listening on port ${port} (ADMIN_TOKEN set)`));
+    } catch (err) {
+      console.warn('Control server failed to start (missing dependency express?). To enable, `npm install express body-parser`');
+    }
+  }
 
   // Initial scan
   console.log('🚀 Starting initial scan...\n');
