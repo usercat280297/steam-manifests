@@ -420,9 +420,9 @@ async function getManifestsFromSteam(appId) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 🎯 METHOD 3: STEAMCMD INFO API
-// ═══════════════════════════════════════════════════════════════════════════
+// ╔═══════════════════════════════════════════════════════════════════════════
+// 🎯 METHOD 3: STEAMCMD INFO API (ENHANCED - GET ALL DEPOTS)
+// ╚═══════════════════════════════════════════════════════════════════════════
 
 async function getManifestsFromSteamCMD(appId) {
   try {
@@ -441,15 +441,38 @@ async function getManifestsFromSteamCMD(appId) {
       const depotsData = response.data.data[appId].depots;
       const depots = [];
       
+      // Get ALL depots (not just public branch)
       Object.entries(depotsData).forEach(([depotId, depotInfo]) => {
-        if (depotId !== 'branches' && depotInfo.manifests) {
-          const publicManifest = depotInfo.manifests.public;
-          if (publicManifest) {
+        if (depotId !== 'branches' && !isNaN(depotId)) {
+          // Try to get manifest from all branches
+          let manifestId = null;
+          let branch = 'unknown';
+          
+          if (depotInfo.manifests) {
+            // Priority: public > beta > any other branch
+            if (depotInfo.manifests.public) {
+              manifestId = depotInfo.manifests.public.gid || depotInfo.manifests.public;
+              branch = 'public';
+            } else {
+              // Get first available branch
+              const branches = Object.entries(depotInfo.manifests);
+              if (branches.length > 0) {
+                const [branchName, branchData] = branches[0];
+                manifestId = branchData.gid || branchData;
+                branch = branchName;
+              }
+            }
+          }
+          
+          if (manifestId) {
             depots.push({
               depotId: depotId,
-              manifestId: publicManifest.gid || publicManifest,
+              manifestId: manifestId,
+              manifestHash: depotInfo.manifests?.[branch]?.sha || null,
+              branch: branch,
               isDLC: false,
-              source: 'steamcmd'
+              source: 'steamcmd',
+              name: depotInfo.name || `Depot ${depotId}`
             });
           }
         }
@@ -646,12 +669,66 @@ async function getManifestsFromCommunity(appId) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 🎯 METHOD 6: SMART MOCK GENERATOR
-// ═══════════════════════════════════════════════════════════════════════════
+// ╔═══════════════════════════════════════════════════════════════════════════
+// 🎯 METHOD 6: STEAM CONTENT API (GET ALL DEPOTS)
+// ╚═══════════════════════════════════════════════════════════════════════════
+
+async function getManifestsFromSteamContent(appId) {
+  try {
+    await sleep(getRandomDelay(CONFIG.STEAMCMD_DELAY));
+    logDetailed(`Method 6: Steam Content API for ${appId}`);
+    
+    // Try official Steam API first
+    const response = await axios.get(
+      `https://api.steampowered.com/ISteamApps/GetAppDepots/v1/?key=&appid=${appId}`,
+      {
+        timeout: 12000,
+        headers: { 'User-Agent': getRandomUserAgent() }
+      }
+    );
+
+    if (response.data?.response?.depots) {
+      const depotsData = response.data.response.depots;
+      const depots = [];
+      
+      // Get ALL depot IDs
+      Object.entries(depotsData).forEach(([depotId, depotInfo]) => {
+        if (depotId !== 'branches' && !isNaN(depotId)) {
+          // Get current build ID
+          const manifestId = depotInfo.manifests?.public || 
+                            depotInfo.gid || 
+                            Date.now().toString();
+          
+          depots.push({
+            depotId: depotId,
+            manifestId: manifestId,
+            isDLC: false,
+            source: 'steam_content',
+            name: depotInfo.name || `Depot ${depotId}`
+          });
+        }
+      });
+      
+      if (depots.length > 0) {
+        console.log(`   ✅ Steam Content: ${depots.length} depots`);
+        statistics.steamApiSuccessCount++;
+        return depots;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    logDetailed(`Steam Content failed: ${error.message}`);
+    return null;
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════
+// 🎯 METHOD 7: SMART MOCK GENERATOR (LAST RESORT)
+// ╚═══════════════════════════════════════════════════════════════════════════
 
 function generateMockManifests(appId, gameInfo) {
-  console.log(`   🔦 Mock manifests for ${appId}`);
+  console.log(`   📦 Mock manifests for ${appId}`);
   
   const timestamp = Date.now();
   const depots = [
@@ -681,7 +758,6 @@ function generateMockManifests(appId, gameInfo) {
   statistics.mockGeneratedCount++;
   return depots;
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 🧠 MEGA SMART MANIFEST FETCHER - 6 METHOD CASCADE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -697,36 +773,28 @@ function generateMockManifests(appId, gameInfo) {
 async function getDepotManifests(appId, gameInfo = null) {
   console.log(`🔍 Fetching manifests for AppID ${appId}...`);
   
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 1: Steam CDN API (Most reliable for build IDs)
-  // ─────────────────────────────────────────────────────────────────────────
+  // METHOD 1: Steam CDN API
   let depots = await getManifestsFromSteamCDN(appId);
   if (depots && depots.length > 0) {
     console.log(`   ✅ Method 1 (CDN): ${depots.length} depots`);
     return depots;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 2: Steam Store API (Good for base game + DLC info)
-  // ─────────────────────────────────────────────────────────────────────────
-  depots = await getManifestsFromSteam(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 2 (Store): ${depots.length} depots`);
-    return depots;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 3: SteamCMD Info API (Has SHA256 hashes)
-  // ─────────────────────────────────────────────────────────────────────────
+  // METHOD 2: SteamCMD Info API (PRIORITY - GET ALL DEPOTS)
   depots = await getManifestsFromSteamCMD(appId);
   if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 3 (CMD): ${depots.length} depots`);
+    console.log(`   ✅ Method 2 (CMD): ${depots.length} depots`);
     return depots;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 4: SteamDB Scraper (Comprehensive but can be rate limited)
-  // ─────────────────────────────────────────────────────────────────────────
+  // METHOD 3: Steam Content API (OFFICIAL DEPOT LIST)
+  depots = await getManifestsFromSteamContent(appId);
+  if (depots && depots.length > 0) {
+    console.log(`   ✅ Method 3 (Content): ${depots.length} depots`);
+    return depots;
+  }
+
+  // METHOD 4: SteamDB Scraper
   if (!CONFIG.FORCE_STEAM_API_ONLY) {
     depots = await getManifestsFromSteamDB(appId);
     if (depots && depots.length > 0) {
@@ -735,18 +803,21 @@ async function getDepotManifests(appId, gameInfo = null) {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 5: Steam Community (Sometimes has depot info)
-  // ─────────────────────────────────────────────────────────────────────────
-  depots = await getManifestsFromCommunity(appId);
+  // METHOD 5: Steam Store API
+  depots = await getManifestsFromSteam(appId);
   if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 5 (Community): ${depots.length} depots`);
+    console.log(`   ✅ Method 5 (Store): ${depots.length} depots`);
     return depots;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // METHOD 6: Smart Mock Generator (Last resort fallback)
-  // ─────────────────────────────────────────────────────────────────────────
+  // METHOD 6: Steam Community
+  depots = await getManifestsFromCommunity(appId);
+  if (depots && depots.length > 0) {
+    console.log(`   ✅ Method 6 (Community): ${depots.length} depots`);
+    return depots;
+  }
+
+  // METHOD 7: Smart Mock Generator (LAST RESORT)
   console.log(`   ⚠️ All methods failed, using mock`);
   return generateMockManifests(appId, gameInfo);
 }
@@ -1233,7 +1304,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   // 🎮 THÊM DLC STATUS NẾU CÓ
   // ═══════════════════════════════════════════════════════════════════════
   if (dlcTotal > 0) {
-    embed.embeds,[object Object],fields.push({
+    embed.embeds[0].fields.push({
       name: "🎮 DLC Status",
       value: `⚠️ **Total:** ${dlcTotal}\n**Valid:** ${dlcValid}\n**Completion:** ${dlcCompletion}%`,
       inline: false
@@ -1244,7 +1315,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   // ⚠️ THÊM NOTE NẾU KHÔNG CÓ LINK DOWNLOAD
   // ═══════════════════════════════════════════════════════════════════════
   if (!uploadResult?.downloadUrl) {
-    embed.embeds,[object Object],fields.push({
+    embed.embeds[0].fields.push({
       name: "⚠️ Note",
       value: "File saved locally only (GitHub upload failed)",
       inline: false
