@@ -674,7 +674,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   };
 
   // Only add download button if upload was successful
-  if (uploadResult && uploadResult.success && uploadResult.downloadUrl) {
+  if (uploadResult?.downloadUrl) {
     embed.components = [{
       type: 1,
       components: [{
@@ -685,6 +685,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         emoji: { name: "📥" }
       }]
     }];
+    console.log(`   🔗 Adding download button: ${uploadResult.downloadUrl}`);
   } else {
     // Add a note that file is saved locally
     embed.embeds[0].fields.push({
@@ -692,6 +693,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
       value: "File saved locally. GitHub upload unavailable.",
       inline: false
     });
+    console.log(`   ⚠️ No download URL available`);
   }
 
   return embed;
@@ -758,6 +760,7 @@ async function processQueue() {
       );
     } else {
       console.log(`   ✅ Creating SUCCESS embed`);
+      console.log(`   📦 Upload result:`, JSON.stringify(message.uploadResult, null, 2));
       payload = await createDiscordEmbed(
         message.gameName,
         message.appId,
@@ -882,8 +885,11 @@ async function checkGameManifest(game, index, total) {
       failed: false
     });
 
-    const uploadStatus = uploadResult && uploadResult.success ? '[GitHub ✓]' : '[Local only]';
+    const uploadStatus = uploadResult?.downloadUrl ? '[GitHub ✓]' : '[Local only]';
     console.log(`   ✅ Queued: ${name} (${depots.length} depots) ${uploadStatus}`);
+    if (uploadResult?.downloadUrl) {
+      console.log(`   🔗 Download: ${uploadResult.downloadUrl}`);
+    }
 
   } catch (error) {
     console.error(`   ❌ Error: ${name} -`, error.message);
