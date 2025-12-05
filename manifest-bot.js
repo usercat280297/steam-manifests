@@ -124,6 +124,9 @@ let controlServer = null;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null;
 const DATABASE_URL = process.env.DATABASE_URL || null;
 let dbPool = null;
+const MONGODB_URI = process.env.MONGODB_URI || null;
+let mongoClient = null;
+let mongoDb = null;
 
 async function initDb() {
   try {
@@ -188,6 +191,66 @@ async function importGamesJsonToDb() {
     console.log('✅ Imported games.json into DB');
   } catch (err) {
     console.error('❌ Import error:', err.message || err);
+  }
+}
+
+// --- MongoDB helpers (optional, used when MONGODB_URI is set)
+async function initMongo() {
+  try {
+    const { MongoClient } = require('mongodb');
+    mongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 10000, serverSelectionTimeoutMS: 10000 });
+    await mongoClient.connect();
+    mongoDb = mongoClient.db();
+    // ensure index on appId for quick upserts
+    await mongoDb.collection('games').createIndex({ appId: 1 }, { unique: true });
+    console.log('🔌 Connected to MongoDB');
+  } catch (err) {
+    console.error('❌ Mongo init error:', err.message || err);
+    mongoClient = null;
+    mongoDb = null;
+  }
+}
+
+async function loadGamesFromMongo() {
+  if (!mongoDb) return [];
+  try {
+    const rows = await mongoDb.collection('games').find().sort({ created_at: 1 }).toArray();
+    const mapped = rows.map(r => ({ name: r.name, appId: Number(r.appId), ...(r.meta || {}) }));
+    console.log(`📊 Loaded ${mapped.length} games from MongoDB`);
+    return mapped;
+  } catch (err) {
+    console.error('❌ Mongo load error:', err.message || err);
+    return [];
+  }
+}
+
+async function insertGameToMongo(game) {
+  if (!mongoDb) throw new Error('MongoDB not initialized');
+  const { name, appId, ...meta } = game;
+  try {
+    await mongoDb.collection('games').updateOne(
+      { appId: Number(appId) },
+      { $set: { appId: Number(appId), name: name || null, meta: Object.keys(meta).length ? meta : null, updated_at: new Date() }, $setOnInsert: { created_at: new Date() } },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.error('❌ Mongo insert error:', err.message || err);
+    return false;
+  }
+}
+
+async function importGamesJsonToMongo() {
+  if (!mongoDb) throw new Error('MongoDB not initialized');
+  try {
+    const raw = fs.readFileSync('games.json', 'utf8');
+    const list = JSON.parse(raw);
+    for (const g of list) {
+      if (g && g.appId) await insertGameToMongo(g);
+    }
+    console.log('✅ Imported games.json into MongoDB');
+  } catch (err) {
+    console.error('❌ Mongo import error:', err.message || err);
   }
 }
 
@@ -1733,6 +1796,11 @@ async function checkGameManifest(game, index, total) {
         shouldProcess = true;
         console.log(`   🎭 Force sending (FORCE_FIRST_SEND enabled)`);
       }
+    }
+    // Allow forcing a single-process test run to always send even if no change
+    if (process.env.SINGLE_PROCESS_FORCE_SEND === 'true') {
+      shouldProcess = true;
+      console.log('   🎯 SINGLE_PROCESS_FORCE_SEND=true — forcing processing for test');
     } else if (currentHash !== lastManifestIds[name]) {
       shouldProcess = true;
       lastManifestIds[name] = currentHash;
@@ -1889,8 +1957,17 @@ async function checkAllGames() {
   const queueInterval = setInterval(processQueue, CONFIG.MESSAGE_INTERVAL);
   console.log(`📨 Queue processor started (${CONFIG.MESSAGE_INTERVAL / 1000}s)\n`);
 
-  // If DATABASE_URL is set, initialize DB and load games from DB
-  if (DATABASE_URL) {
+  // Initialize database based on environment variables
+  if (MONGODB_URI) {
+    console.log('ℹ️ MONGODB_URI detected — using MongoDB for persistence');
+    await initMongo();
+    if (process.env.IMPORT_GAMES_JSON === 'true') {
+      await importGamesJsonToMongo();
+    }
+    const dbGames = await loadGamesFromMongo();
+    if (dbGames && dbGames.length > 0) games = dbGames;
+  } else if (DATABASE_URL) {
+    console.log('ℹ️ DATABASE_URL detected — using PostgreSQL for persistence');
     await initDb();
     // Optional one-time import from games.json if IMPORT_GAMES_JSON is true
     if (process.env.IMPORT_GAMES_JSON === 'true') {
@@ -1943,7 +2020,11 @@ async function checkAllGames() {
 
           const gameObj = { name: String(name), appId: Number(appId) };
 
-          if (DATABASE_URL && dbPool) {
+          if (MONGODB_URI && mongoDb) {
+            const ok = await insertGameToMongo(gameObj);
+            if (!ok) return res.status(500).json({ error: 'DB insert failed' });
+            games = await loadGamesFromMongo();
+          } else if (DATABASE_URL && dbPool) {
             const ok = await insertGameToDb(gameObj);
             if (!ok) return res.status(500).json({ error: 'DB insert failed' });
             // reload games list from DB
@@ -1979,6 +2060,10 @@ async function checkAllGames() {
         try {
           const token = req.headers['x-admin-token'] || req.query.token;
           if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+          if (MONGODB_URI && mongoDb) {
+            const list = await loadGamesFromMongo();
+            return res.json(list);
+          }
           if (DATABASE_URL && dbPool) {
             const list = await loadGamesFromDb();
             return res.json(list);
@@ -2056,9 +2141,34 @@ async function checkAllGames() {
     }
   }
 
+  // If SINGLE_PROCESS_APPID is set, run only that game and exit (useful for one-off tests)
+  if (process.env.SINGLE_PROCESS_APPID) {
+    const singleAppId = Number(process.env.SINGLE_PROCESS_APPID);
+    console.log(`\n🔬 SINGLE_PROCESS_APPID=${singleAppId} — running single-game test`);
+    const game = games.find(g => Number(g.appId) === singleAppId);
+    if (!game) {
+      console.error(`❌ AppID ${singleAppId} not found in games list`);
+    } else {
+      await checkGameManifest(game, games.findIndex(g => Number(g.appId) === singleAppId) + 1, games.length);
+      // process message queue until empty
+      while (messageQueue.length > 0) {
+        await processQueue();
+        await sleep(CONFIG.MESSAGE_INTERVAL);
+      }
+    }
+    saveState();
+    console.log('🔚 Single-game test complete — exiting');
+    process.exit(0);
+  }
+
   // Initial scan
   console.log('🚀 Starting initial scan...\n');
-  await checkAllGames();
+  // Allow skipping the heavy initial full scan when running in control/test mode
+  if (process.env.SKIP_INITIAL_SCAN !== 'true') {
+    await checkAllGames();
+  } else {
+    console.log('⚠️ SKIP_INITIAL_SCAN is true — skipping full initial scan (control/test mode)');
+  }
   
   // Schedule periodic scans
   const mainInterval = setInterval(async () => {
