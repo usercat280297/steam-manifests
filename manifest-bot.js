@@ -1140,6 +1140,10 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId, retryCount
 // 💬 DISCORD WEBHOOK - SUCCESS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 💬 DISCORD WEBHOOK - SUCCESS (ĐÃ SỬA - THÊM LINK DOWNLOAD)
+// ═══════════════════════════════════════════════════════════════════════════
+
 async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo) {
   const totalManifests = depots.filter(d => !d.isDLC).length;
   const validManifests = depots.filter(d => !d.isDLC && d.manifestId && d.manifestId !== '0').length;
@@ -1164,6 +1168,16 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
     manifestStatus += `\n⚠️ Contains mock data`;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🔗 TẠO LINKS VALUE - THÊM LINK DOWNLOAD NẾU CÓ
+  // ═══════════════════════════════════════════════════════════════════════
+  let linksValue = `[Steam Store](${steamStoreUrl}) | [SteamDB](${steamDbUrl})`;
+  
+  // ✅ THÊM LINK DOWNLOAD VÀO ĐÂY
+  if (uploadResult?.downloadUrl) {
+    linksValue += ` | [📥 Download .lua](${uploadResult.downloadUrl})`;
+  }
+
   const embed = {
     embeds: [{
       author: {
@@ -1177,7 +1191,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
       fields: [
         {
           name: "🔗 Links",
-          value: `[Steam Store](${steamStoreUrl}) | [SteamDB](${steamDbUrl})`,
+          value: linksValue,  // ✅ SỬ DỤNG BIẾN MỚI CÓ LINK DOWNLOAD
           inline: false
         },
         {
@@ -1215,32 +1229,30 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
     }]
   };
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🎮 THÊM DLC STATUS NẾU CÓ
+  // ═══════════════════════════════════════════════════════════════════════
   if (dlcTotal > 0) {
-    embed.embeds[0].fields.push({
+    embed.embeds,[object Object],fields.push({
       name: "🎮 DLC Status",
       value: `⚠️ **Total:** ${dlcTotal}\n**Valid:** ${dlcValid}\n**Completion:** ${dlcCompletion}%`,
       inline: false
     });
   }
 
-  if (uploadResult?.downloadUrl) {
-    embed.components = [{
-      type: 1,
-      components: [{
-        type: 2,
-        style: 5,
-        label: "Download Manifest.lua",
-        url: uploadResult.downloadUrl,
-        emoji: { name: "📥" }
-      }]
-    }];
-  } else {
-    embed.embeds[0].fields.push({
+  // ═══════════════════════════════════════════════════════════════════════
+  // ⚠️ THÊM NOTE NẾU KHÔNG CÓ LINK DOWNLOAD
+  // ═══════════════════════════════════════════════════════════════════════
+  if (!uploadResult?.downloadUrl) {
+    embed.embeds,[object Object],fields.push({
       name: "⚠️ Note",
-      value: "File saved locally only",
+      value: "File saved locally only (GitHub upload failed)",
       inline: false
     });
   }
+
+  // ❌ XÓA PHẦN COMPONENTS - WEBHOOK KHÔNG HỖ TRỢ BUTTONS
+  // embed.components = [...] <-- KHÔNG CẦN NỮA
 
   return embed;
 }
