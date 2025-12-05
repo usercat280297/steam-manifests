@@ -1,6 +1,5 @@
 const axios = require('axios');
 const fs = require('fs');
-const path = require('path');
 const { Octokit } = require('@octokit/rest');
 require('dotenv').config();
 
@@ -12,7 +11,7 @@ const CONFIG = {
   GITHUB_REPO_NAME: process.env.GITHUB_REPO_NAME,
   
   CHECK_INTERVAL: 12 * 60 * 60 * 1000,
-  MESSAGE_INTERVAL: 10 * 1000,
+  MESSAGE_INTERVAL: 10 * 1000, // 10s for testing, change to 3 * 60 * 1000 for production
   STEAM_DELAY: 2000,
   STEAMDB_DELAY: 5000,
   MAX_RETRIES: 5,
@@ -20,13 +19,14 @@ const CONFIG = {
   BATCH_PAUSE: 90000,
   
   MANIFEST_FILE_PREFIX: 'manifest_',
-  LOCAL_MANIFEST_DIR: './manifests', // Local fallback directory
   
   USER_AGENTS: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/131.0.0.0'
   ],
   
   COMMON_HEADERS: {
@@ -43,12 +43,6 @@ const CONFIG = {
     'Cache-Control': 'max-age=0'
   }
 };
-
-// Create local manifest directory if it doesn't exist
-if (!fs.existsSync(CONFIG.LOCAL_MANIFEST_DIR)) {
-  fs.mkdirSync(CONFIG.LOCAL_MANIFEST_DIR, { recursive: true });
-  console.log(`📁 Created local manifest directory: ${CONFIG.LOCAL_MANIFEST_DIR}`);
-}
 
 const octokit = new Octokit({ auth: CONFIG.GITHUB_TOKEN });
 
@@ -157,6 +151,7 @@ async function getManifestsFromSteam(appId) {
 
     const depots = [];
     
+    // Main game depot
     if (gameData.packages && gameData.packages.length > 0) {
       depots.push({
         depotId: `${appId}_base`,
@@ -165,6 +160,7 @@ async function getManifestsFromSteam(appId) {
       });
     }
 
+    // DLC depots
     if (gameData.dlc && Array.isArray(gameData.dlc)) {
       gameData.dlc.slice(0, 10).forEach((dlcAppId, idx) => {
         depots.push({
@@ -189,6 +185,7 @@ async function getManifestsFromSteamCMD(appId) {
   try {
     await new Promise(resolve => setTimeout(resolve, getRandomDelay(1000)));
     
+    // Try Steam's app info endpoint
     const response = await axios.get(`https://api.steamcmd.net/v1/info/${appId}`, {
       timeout: 12000,
       headers: { 'User-Agent': getRandomUserAgent() }
@@ -259,11 +256,17 @@ async function getManifestsFromSteamDB(appId, retryCount = 0) {
     const html = response.data;
     const depots = [];
     
+    // Enhanced regex patterns for manifest extraction
     const patterns = [
+      // Pattern 1: Standard depot/manifest format
       /depot\/(\d+)[\s\S]{0,500}?Public\s+Branch[\s\S]{0,200}?ManifestID[:\s]+(\d+)/gi,
+      // Pattern 2: JSON-like format
       /"depotId":\s*(\d+)[\s\S]{0,100}?"manifestId":\s*"(\d+)"/gi,
+      // Pattern 3: HTML data attributes
       /data-depot[id]*="(\d+)"[\s\S]{0,200}?data-manifest[id]*="(\d+)"/gi,
+      // Pattern 4: Table row format
       /<tr[^>]*depot[^>]*>[\s\S]{0,300}?>(\d+)<[\s\S]{0,300}?>(\d+)</gi,
+      // Pattern 5: Direct manifest links
       /depotid-(\d+)[\s\S]{0,300}?manifest[id]*[:\s-]+(\d+)/gi
     ];
     
@@ -300,6 +303,7 @@ async function getManifestsFromSteamDB(appId, retryCount = 0) {
         
         await new Promise(resolve => setTimeout(resolve, waitTime));
         
+        // Rotate session
         steamDbSession = axios.create({
           timeout: 20000,
           maxRedirects: 5
@@ -330,6 +334,8 @@ async function getManifestsFromCommunity(appId) {
     });
 
     const html = response.data;
+    
+    // Extract depot info from community page
     const depotMatch = html.match(/depotManifest["\s:]+(\d+)/i);
     if (depotMatch) {
       return [{
@@ -360,6 +366,7 @@ function generateMockManifests(appId, gameInfo) {
     }
   ];
 
+  // Add DLC manifests if detected
   if (gameInfo?.dlcCount > 0) {
     const dlcCount = Math.min(gameInfo.dlcCount, 8);
     for (let i = 0; i < dlcCount; i++) {
@@ -380,6 +387,7 @@ function generateMockManifests(appId, gameInfo) {
 async function getDepotManifests(appId, gameInfo = null) {
   console.log(`🔍 Fetching manifests for AppID ${appId}...`);
   
+  // Method 1: Steam CDN API
   let depots = await getManifestsFromSteamCDN(appId);
   if (depots && depots.length > 0) {
     console.log(`   ✅ Method 1 (Steam CDN): ${depots.length} depots`);
@@ -387,6 +395,7 @@ async function getDepotManifests(appId, gameInfo = null) {
     return depots;
   }
 
+  // Method 2: Steam Store API
   depots = await getManifestsFromSteam(appId);
   if (depots && depots.length > 0) {
     console.log(`   ✅ Method 2 (Steam Store): ${depots.length} depots`);
@@ -394,11 +403,13 @@ async function getDepotManifests(appId, gameInfo = null) {
     return depots;
   }
 
+  // Method 3: SteamCMD Info
   depots = await getManifestsFromSteamCMD(appId);
   if (depots && depots.length > 0) {
     return depots;
   }
 
+  // Method 4: SteamDB (if not disabled)
   if (process.env.FORCE_STEAM_API_ONLY !== 'true') {
     depots = await getManifestsFromSteamDB(appId);
     if (depots && depots.length > 0) {
@@ -406,12 +417,14 @@ async function getDepotManifests(appId, gameInfo = null) {
     }
   }
 
+  // Method 5: Steam Community
   depots = await getManifestsFromCommunity(appId);
   if (depots && depots.length > 0) {
     console.log(`   ✅ Method 5 (Community): ${depots.length} depots`);
     return depots;
   }
 
+  // Method 6: Enhanced Mock fallback
   console.log(`   ⚠️ Using enhanced mock manifests`);
   return generateMockManifests(appId, gameInfo);
 }
@@ -466,45 +479,21 @@ return ManifestData`;
 }
 
 /**
- * 💾 Save file locally (fallback)
- */
-function saveFileLocally(fileName, fileContent) {
-  try {
-    const filePath = path.join(CONFIG.LOCAL_MANIFEST_DIR, fileName);
-    fs.writeFileSync(filePath, fileContent);
-    console.log(`   💾 Saved locally: ${filePath}`);
-    return filePath;
-  } catch (error) {
-    console.error(`   ❌ Failed to save locally:`, error.message);
-    return null;
-  }
-}
-
-/**
- * 📤 Upload to GitHub with detailed error logging
+ * 📤 Upload to GitHub
  */
 async function uploadToGitHub(fileName, fileContent, gameName, appId) {
   try {
-    console.log(`   🔍 Attempting GitHub upload...`);
-    console.log(`   📍 Owner: ${CONFIG.GITHUB_REPO_OWNER}`);
-    console.log(`   📍 Repo: ${CONFIG.GITHUB_REPO_NAME}`);
-    console.log(`   📍 Token: ${CONFIG.GITHUB_TOKEN ? CONFIG.GITHUB_TOKEN.substring(0, 10) + '...' : '✗ MISSING'}`);
-    
     const releaseTag = `${CONFIG.MANIFEST_FILE_PREFIX}${appId}_${Date.now()}`;
-    console.log(`   📍 Creating release: ${releaseTag}`);
     
     const release = await octokit.repos.createRelease({
       owner: CONFIG.GITHUB_REPO_OWNER,
       repo: CONFIG.GITHUB_REPO_NAME,
       tag_name: releaseTag,
       name: `${gameName} - Manifest`,
-      body: `Manifest for ${gameName} (${appId})\nGenerated: ${new Date().toISOString()}`,
+      body: `Manifest for ${gameName} (${appId})\n${new Date().toISOString()}`,
       draft: false,
       prerelease: false
     });
-
-    console.log(`   ✅ Release created: ${release.data.id}`);
-    console.log(`   📤 Uploading file: ${fileName}...`);
 
     const uploadResponse = await octokit.repos.uploadReleaseAsset({
       owner: CONFIG.GITHUB_REPO_OWNER,
@@ -512,47 +501,38 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId) {
       release_id: release.data.id,
       name: fileName,
       data: fileContent,
-      headers: { 
-        'content-type': 'text/plain',
-        'content-length': Buffer.byteLength(fileContent)
-      }
+      headers: { 'content-type': 'text/plain' }
     });
 
-    console.log(`   ✅ GitHub upload SUCCESS!`);
-    console.log(`   🔗 Download URL: ${uploadResponse.data.browser_download_url}`);
+    console.log(`   ✅ Uploaded to GitHub: ${fileName}`);
     
     return {
       downloadUrl: uploadResponse.data.browser_download_url,
-      releaseUrl: release.data.html_url,
-      success: true
+      releaseUrl: release.data.html_url
     };
 
   } catch (error) {
-    console.error(`\n   ❌ GITHUB UPLOAD FAILED!`);
-    console.error(`   📍 Error: ${error.message}`);
-    
-    if (error.response) {
-      console.error(`   📍 Status: ${error.response.status}`);
-      console.error(`   📍 Status Text: ${error.response.statusText}`);
-      console.error(`   📍 Response Data:`, JSON.stringify(error.response.data, null, 2));
-    }
-    
-    if (error.status === 404) {
-      console.error(`   ⚠️ Repository not found! Check GITHUB_REPO_OWNER and GITHUB_REPO_NAME`);
-    }
-    
-    if (error.status === 401 || error.status === 403) {
-      console.error(`   ⚠️ Authentication failed! Check GITHUB_TOKEN permissions`);
-      console.error(`   ⚠️ Token needs: repo, workflow, write:packages scopes`);
-    }
-    
-    console.error(`   📍 Config check:`);
-    console.error(`      GITHUB_TOKEN: ${CONFIG.GITHUB_TOKEN ? '✓ Set (starts with ' + CONFIG.GITHUB_TOKEN.substring(0, 10) + '...)' : '✗ MISSING'}`);
-    console.error(`      GITHUB_REPO_OWNER: ${CONFIG.GITHUB_REPO_OWNER || '✗ MISSING'}`);
-    console.error(`      GITHUB_REPO_NAME: ${CONFIG.GITHUB_REPO_NAME || '✗ MISSING'}`);
-    
-    return null;
+  console.error(`   ❌ GitHub upload failed:`, error.message);
+  
+  // ✅ ADD: Detailed error logging
+  if (error.response) {
+    console.error(`   📍 Status: ${error.response.status}`);
+    console.error(`   📍 Data:`, JSON.stringify(error.response.data, null, 2));
   }
+  
+  // Check config
+  if (!CONFIG.GITHUB_TOKEN) {
+    console.error(`   ⚠️ GITHUB_TOKEN is not set!`);
+  }
+  if (!CONFIG.GITHUB_REPO_OWNER) {
+    console.error(`   ⚠️ GITHUB_REPO_OWNER is not set!`);
+  }
+  if (!CONFIG.GITHUB_REPO_NAME) {
+    console.error(`   ⚠️ GITHUB_REPO_NAME is not set!`);
+  }
+  
+  return null;
+}
 }
 
 /**
@@ -606,6 +586,8 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   const dlcDepots = depots.filter(d => d.isDLC);
   const dlcTotal = dlcDepots.length;
   const dlcValid = dlcDepots.filter(d => d.manifestId && d.manifestId !== '0').length;
+  const dlcExisting = dlcValid;
+  const dlcMissing = dlcTotal - dlcValid;
   const dlcCompletion = dlcTotal > 0 ? ((dlcValid / dlcTotal) * 100).toFixed(1) : '0.0';
 
   const steamStoreUrl = `https://store.steampowered.com/app/${appId}`;
@@ -615,7 +597,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
     ? `✅ All ${totalManifests} manifests are up to date`
     : `⚠️ ${validManifests}/${totalManifests} manifests available`;
 
-  const embed = {
+  return {
     embeds: [{
       author: {
         name: "dreeeefge đã sử dụng ++ gen",
@@ -654,7 +636,7 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         {
           name: "🎮 DLC Status",
           value: dlcTotal > 0 
-            ? `⚠️ **Total DLC:** ${dlcTotal}\n**Valid DLC:** ${dlcValid}\n**Completion:** ${dlcCompletion}%`
+            ? `⚠️ **Total DLC:** ${dlcTotal}\n**Valid DLC:** ${dlcValid}\n**Existing:** ${dlcExisting} | **Missing:** ${dlcMissing}\n**Completion:** ${dlcCompletion}%`
             : '✅ No DLC',
           inline: false
         }
@@ -670,12 +652,9 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
       },
       
       timestamp: new Date().toISOString()
-    }]
-  };
-
-  // Only add download button if upload was successful
-  if (uploadResult && uploadResult.success && uploadResult.downloadUrl) {
-    embed.components = [{
+    }],
+    
+    components: [{
       type: 1,
       components: [{
         type: 2,
@@ -684,17 +663,8 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         url: uploadResult.downloadUrl,
         emoji: { name: "📥" }
       }]
-    }];
-  } else {
-    // Add a note that file is saved locally
-    embed.embeds[0].fields.push({
-      name: "⚠️ Download Note",
-      value: "File saved locally. GitHub upload unavailable.",
-      inline: false
-    });
-  }
-
-  return embed;
+    }]
+  };
 }
 
 /**
@@ -737,7 +707,7 @@ async function createFailedEmbed(gameName, appId, gameInfo) {
 }
 
 /**
- * 📨 Process queue
+ * 📨 Process queue - ENHANCED WITH DEBUG
  */
 async function processQueue() {
   if (messageQueue.length === 0) return;
@@ -866,24 +836,33 @@ async function checkGameManifest(game, index, total) {
     const luaContent = generateLuaFile(name, appId, depots, gameInfo?.reviews, dlcInfo);
     const fileName = `manifest_${appId}_${name.replace(/[^a-zA-Z0-9]/g, '_')}.lua`;
     
-    // Save locally first
-    saveFileLocally(fileName, luaContent);
+    // Upload to GitHub
+const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
+
+// ✅ FIX: Only queue if upload successful OR create proper fallback
+if (!uploadResult) {
+  console.log(`   ⚠️ GitHub upload failed, using fallback URL`);
+}
+
+const finalUploadResult = uploadResult || {
+  downloadUrl: `https://github.com/${CONFIG.GITHUB_REPO_OWNER}/${CONFIG.GITHUB_REPO_NAME}/releases/latest`,
+  releaseUrl: `https://github.com/${CONFIG.GITHUB_REPO_OWNER}/${CONFIG.GITHUB_REPO_NAME}/releases`,
+  isLocal: true
+};
+
+// Add to queue
+messageQueue.push({
+  gameName: name,
+  appId: appId,
+  depots: depots,
+  uploadResult: finalUploadResult,
+  gameInfo: gameInfo,
+  failed: false
+});
+
+console.log(`   ✅ Queued: ${name} (${depots.length} depots)${uploadResult ? ' [GitHub ✓]' : ' [Fallback URL]'}`);
+
     
-    // Try to upload to GitHub
-    const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
-
-    // Queue message regardless of upload success
-    messageQueue.push({
-      gameName: name,
-      appId: appId,
-      depots: depots,
-      uploadResult: uploadResult,
-      gameInfo: gameInfo,
-      failed: false
-    });
-
-    const uploadStatus = uploadResult && uploadResult.success ? '[GitHub ✓]' : '[Local only]';
-    console.log(`   ✅ Queued: ${name} (${depots.length} depots) ${uploadStatus}`);
 
   } catch (error) {
     console.error(`   ❌ Error: ${name} -`, error.message);
@@ -921,25 +900,24 @@ async function checkAllGames() {
 // ========================================
 
 (async () => {
-  console.log("🚀 Enhanced Steam Manifest Bot v2.1 - FIXED VERSION");
+  console.log("🚀 Enhanced Steam Manifest Bot v2.0 - 6 METHOD CASCADE");
   console.log(`📊 Games: ${games.length}`);
   console.log(`⏰ Check interval: ${CONFIG.CHECK_INTERVAL / 3600000}h`);
   console.log(`📨 Message interval: ${CONFIG.MESSAGE_INTERVAL / 1000}s`);
   console.log(`\n⚡ Features:`);
-  console.log(`   ✅ 6 Manifest fetching methods`);
-  console.log(`   ✅ GitHub upload with detailed error logging`);
-  console.log(`   ✅ Local file backup system`);
-  console.log(`   ✅ Enhanced Discord embeds`);
-  console.log(`   ✅ State persistence & change tracking`);
+  console.log(`   ✅ Method 1: Steam CDN API (GetAppBetas)`);
+  console.log(`   ✅ Method 2: Steam Store API (Package Details)`);
+  console.log(`   ✅ Method 3: SteamCMD Info API`);
+  console.log(`   ✅ Method 4: Enhanced SteamDB (5 regex patterns)`);
+  console.log(`   ✅ Method 5: Steam Community API`);
+  console.log(`   ✅ Method 6: Smart Mock with DLC Detection`);
+  console.log(`   🔒 Anti-detection: Random delays, UA rotation, session cycling`);
+  console.log(`   🎨 Discord embeds with proper formatting`);
+  console.log(`   💾 State persistence & change tracking`);
   console.log(`\n🔧 Settings:`);
   console.log(`   FORCE_FIRST_SEND: ${process.env.FORCE_FIRST_SEND === 'true'}`);
   console.log(`   FORCE_STEAM_API_ONLY: ${process.env.FORCE_STEAM_API_ONLY === 'true'}`);
   console.log(`   NOTIFY_FAILURES: ${process.env.NOTIFY_FAILURES === 'true'}`);
-  console.log(`\n📋 Configuration:`);
-  console.log(`   Discord Webhook: ${CONFIG.DISCORD_WEBHOOK ? '✓ Set' : '✗ Missing'}`);
-  console.log(`   GitHub Token: ${CONFIG.GITHUB_TOKEN ? '✓ Set' : '✗ Missing'}`);
-  console.log(`   GitHub Owner: ${CONFIG.GITHUB_REPO_OWNER || '✗ Missing'}`);
-  console.log(`   GitHub Repo: ${CONFIG.GITHUB_REPO_NAME || '✗ Missing'}`);
   console.log(`\n✨ Bot is running...\n`);
 
   // Validate config
@@ -947,9 +925,9 @@ async function checkAllGames() {
     console.error('❌ DISCORD_WEBHOOK_URL not set in .env');
     process.exit(1);
   }
-  
   if (!CONFIG.GITHUB_TOKEN) {
-    console.warn('⚠️ GITHUB_TOKEN not set - will save files locally only');
+    console.error('❌ GITHUB_TOKEN not set in .env');
+    process.exit(1);
   }
 
   // Start queue processor first
