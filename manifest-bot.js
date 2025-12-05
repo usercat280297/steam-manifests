@@ -927,52 +927,104 @@ function generateMockManifests(appId, gameInfo) {
 async function getDepotManifests(appId, gameInfo = null) {
   console.log(`🔍 Fetching manifests for AppID ${appId}...`);
   
-  // METHOD 1: Steam CDN API
-  let depots = await getManifestsFromSteamCDN(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 1 (CDN): ${depots.length} depots`);
-    return depots;
-  }
+  // Advanced heuristics: confidences vary by branch and source
+  const branchConfidenceBoost = (branch) => {
+    if (!branch) return 0;
+    const b = branch.toLowerCase();
+    if (b === 'public' || b === 'master') return 30;
+    if (b.includes('live') || b.includes('main')) return 25;
+    if (b.includes('beta')) return 15;
+    if (b.includes('test')) return 10;
+    if (b.includes('dev')) return 5;
+    return 0; // unknown branches get no boost
+  };
 
-  // METHOD 2: SteamCMD Info API (PRIORITY - GET ALL DEPOTS)
-  depots = await getManifestsFromSteamCMD(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 2 (CMD): ${depots.length} depots`);
-    return depots;
-  }
+  const sources = [
+    { name: 'cdn', fn: getManifestsFromSteamCDN, confidence: 100 },
+    { name: 'cmd', fn: getManifestsFromSteamCMD, confidence: 95 },
+    { name: 'content', fn: getManifestsFromSteamContent, confidence: 90 },
+    { name: 'steamdb', fn: getManifestsFromSteamDB, confidence: 85 },
+    { name: 'store', fn: getManifestsFromSteam, confidence: 80 },
+    { name: 'community', fn: getManifestsFromCommunity, confidence: 60 }
+  ];
 
-  // METHOD 3: Steam Content API (OFFICIAL DEPOT LIST)
-  depots = await getManifestsFromSteamContent(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 3 (Content): ${depots.length} depots`);
-    return depots;
-  }
+  // Respect config: optionally skip non-official scraping
+  const allowedSources = sources.filter(s => {
+    if (CONFIG.FORCE_STEAM_API_ONLY && (s.name === 'steamdb' || s.name === 'community')) return false;
+    return true;
+  });
 
-  // METHOD 4: SteamDB Scraper
-  if (!CONFIG.FORCE_STEAM_API_ONLY) {
-    depots = await getManifestsFromSteamDB(appId);
-    if (depots && depots.length > 0) {
-      console.log(`   ✅ Method 4 (DB): ${depots.length} depots`);
-      return depots;
+  // Launch probes in parallel with per-source timeout
+  const probes = allowedSources.map(s => (async () => {
+    try {
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Probe timeout')), 8000)
+      );
+      const res = await Promise.race([s.fn(appId), timeoutPromise]);
+      return { name: s.name, baseConfidence: s.confidence, depots: Array.isArray(res) ? res : [] };
+    } catch (err) {
+      logDetailed && logDetailed(`Probe ${s.name} failed for ${appId}: ${err && err.message}`);
+      return { name: s.name, baseConfidence: s.confidence, depots: [] };
+    }
+  })());
+
+  const probeResults = await Promise.all(probes);
+
+  // Merge + dedupe depots by depotId+manifestId
+  const dedupeMap = new Map();
+  for (const pr of probeResults) {
+    if (!pr.depots || pr.depots.length === 0) {
+      logDetailed && logDetailed(`   • ${pr.name}: 0`);
+      continue;
+    }
+    logDetailed && logDetailed(`   • ${pr.name}: ${pr.depots.length}`);
+    
+    for (const d of pr.depots) {
+      const key = `${d.depotId || d.depot || 'unknown'}|${d.manifestId || d.m || ''}`;
+      const existing = dedupeMap.get(key);
+      const entry = existing ? existing : Object.assign({}, d);
+      
+      // Track sources and compute confidence with branch boost
+      entry.sources = entry.sources || new Set();
+      entry.sources.add(pr.name);
+      
+      const branchBoost = branchConfidenceBoost(d.branch);
+      const computedConfidence = pr.baseConfidence + branchBoost;
+      entry.confidence = Math.max(entry.confidence || 0, computedConfidence);
+      entry.source = Array.from(entry.sources).join(',');
+      entry.branchConfidenceBoost = branchBoost;
+      
+      dedupeMap.set(key, entry);
     }
   }
 
-  // METHOD 5: Steam Store API
-  depots = await getManifestsFromSteam(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 5 (Store): ${depots.length} depots`);
-    return depots;
+  const merged = Array.from(dedupeMap.values());
+
+  if (merged.length > 0) {
+    // Sort by: confidence desc, then by branch preference, then depotId
+    merged.sort((a, b) => {
+      const confDiff = (b.confidence || 0) - (a.confidence || 0);
+      if (confDiff !== 0) return confDiff;
+      const branchOrder = { 'public': 1, 'live': 2, 'main': 3, 'beta': 4 };
+      const aOrder = branchOrder[String(a.branch).toLowerCase()] || 99;
+      const bOrder = branchOrder[String(b.branch).toLowerCase()] || 99;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return ('' + (a.depotId || '')).localeCompare(b.depotId || '');
+    });
+    
+    console.log(`   ✅ Merged discovery: ${merged.length} unique depots from ${probeResults.filter(p => p.depots.length > 0).length} sources`);
+    console.log(`      Top 3 by confidence: ${merged.slice(0, 3).map(m => `${m.depotId}(${m.confidence})`).join(', ')}`);
+    
+    return merged.map(m => {
+      if (m.sources && m.sources instanceof Set) m.sources = Array.from(m.sources);
+      // Remove internal helper fields
+      delete m.branchConfidenceBoost;
+      return m;
+    });
   }
 
-  // METHOD 6: Steam Community
-  depots = await getManifestsFromCommunity(appId);
-  if (depots && depots.length > 0) {
-    console.log(`   ✅ Method 6 (Community): ${depots.length} depots`);
-    return depots;
-  }
-
-  // METHOD 7: Smart Mock Generator (LAST RESORT)
-  console.log(`   ⚠️ All methods failed, using mock`);
+  // Fallback to mock generator when nothing found
+  console.log(`   ⚠️ All probes returned empty, using mock`);
   return generateMockManifests(appId, gameInfo);
 }
 
@@ -1632,9 +1684,22 @@ async function checkGameManifest(game, index, total) {
     const gameInfo = await getGameInfo(appId);
     
     // ─────────────────────────────────────────────────────────────────────
-    // STEP 2: FETCH MANIFESTS (6 METHODS CASCADE)
+    // STEP 2: FETCH MANIFESTS (6 METHODS CASCADE + MULTI-MANIFEST RETRY)
     // ─────────────────────────────────────────────────────────────────────
-    const depots = await getDepotManifests(appId, gameInfo);
+    let depots = await getDepotManifests(appId, gameInfo);
+    let manifestTryCount = 1;
+    
+    // If empty or only 1 manifest, try again up to 2 times (fallback retry)
+    if ((!depots || depots.length < 2) && manifestTryCount < 2) {
+      console.log(`   🔄 Limited manifests found, retrying discovery...`);
+      await sleep(2000);
+      const depots2 = await getDepotManifests(appId, gameInfo);
+      if (depots2 && depots2.length > (depots?.length || 0)) {
+        depots = depots2;
+        manifestTryCount++;
+        console.log(`   ✅ Retry improved result: ${depots.length} depots`);
+      }
+    }
     
     if (!depots || depots.length === 0) {
       console.log(`   ⚠️  No manifests for ${name}`);
@@ -1692,7 +1757,7 @@ async function checkGameManifest(game, index, total) {
     const fileName = sanitizeFilename(`${appId}.lua`);
     
     console.log(`   📝 Generated: ${fileName}`);
-    console.log(`   📦 ${depots.length} depots (${dlcInfo.total} DLC)`);
+    console.log(`   📦 ${depots.length} depots (${dlcInfo.total} DLC) [${manifestTryCount} attempt(s)]`);
     
     // ─────────────────────────────────────────────────────────────────────
     // STEP 5: SAVE LOCALLY

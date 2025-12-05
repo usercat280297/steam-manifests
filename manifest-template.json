@@ -1,0 +1,13 @@
+{
+  "appId": 123456,
+  "name": "Example Game (test manifest)",
+  "depots": [
+    {
+      "depotId": "123456_0",
+      "manifestId": "0000000000000000000",
+      "branch": "public",
+      "notes": "This is a placeholder depot/manifest for testing only. Not a bypass of any DRM."
+    }
+  ],
+  "purpose": "This template is a harmless manifest stub for development/testing of the bot's processing and packaging flows. DO NOT use this to attempt to circumvent DRM or online checks."
+}
