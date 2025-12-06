@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 const axios = require('axios');
+// Load env files: .env then .env.local (if present)
+require('dotenv').config();
+require('dotenv').config({ path: '.env.local' });
 const { MongoClient } = require('mongodb');
 const readline = require('readline');
 
@@ -98,6 +101,33 @@ async function notifyManifestBot(appId) {
       return res2.data || res2.status;
     } catch (err2) {
       // log more detailed errors for diagnosis
+      console.warn('Notify manifest-bot failed (POST):', err.response?.status || err.message || err);
+      if (err.response && err.response.data) console.warn('Response data:', JSON.stringify(err.response.data));
+      console.warn('Notify manifest-bot failed (GET):', err2.response?.status || err2.message || err2);
+      if (err2.response && err2.response.data) console.warn('GET response data:', JSON.stringify(err2.response.data));
+      return null;
+    }
+  }
+}
+
+async function notifyManifestBotWith(urlBase, token, appId) {
+  if (!urlBase) return null;
+  try {
+    const url = urlBase.replace(/\/$/, '') + '/process';
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (token) headers['x-admin-token'] = token;
+    const body = { appId: Number(appId) };
+    if (token) body.token = token;
+    const res = await axios.post(url, body, { headers, timeout: 10000 });
+    return res.data || res.status;
+  } catch (err) {
+    try {
+      let url = urlBase.replace(/\/$/, '') + `/process?appId=${encodeURIComponent(appId)}`;
+      if (token) url += `&token=${encodeURIComponent(token)}`;
+      const res2 = await axios.get(url, { timeout: 8000 });
+      return res2.data || res2.status;
+    } catch (err2) {
       console.warn('Notify manifest-bot failed (POST):', err.response?.status || err.message || err);
       if (err.response && err.response.data) console.warn('Response data:', JSON.stringify(err.response.data));
       console.warn('Notify manifest-bot failed (GET):', err2.response?.status || err2.message || err2);
@@ -210,7 +240,48 @@ async function notifyDiscord(appId, name) {
       const r = await notifyManifestBot(appId);
       console.log('Manifest-bot responded:', r);
     } else {
-      console.log('No MANIFEST_ADMIN_URL configured. If your manifest-bot instance watches Mongo change-streams, it will pick up the new entry automatically.');
+      // Interactive fallback: prompt user to optionally notify a running bot now
+      const want = (await ask('MANIFEST_ADMIN_URL not configured. Do you want to notify a running manifest-bot now? (y/N): ')).trim().toLowerCase();
+      if (want.startsWith('y')) {
+        const url = (await ask('Enter manifest-bot base URL (e.g. https://your-app.up.railway.app): ')).trim();
+        const token = (await ask('Enter ADMIN token for manifest-bot (leave empty if none): ')).trim();
+        if (!url) {
+          console.log('No URL provided, skipping notification.');
+        } else {
+          console.log('Requesting manifest-bot to process this app...');
+          const r = await notifyManifestBotWith(url, token || null, appId);
+          console.log('Manifest-bot responded:', r);
+
+          const save = (await ask('Save this MANIFEST_ADMIN_URL and token to a local .env.local for future runs? (y/N): ')).trim().toLowerCase();
+          if (save.startsWith('y')) {
+            const fs = require('fs');
+            const envFile = '.env.local';
+            let content = '';
+            content += `MANIFEST_ADMIN_URL=${url}\n`;
+            if (token) content += `MANIFEST_ADMIN_TOKEN=${token}\n`;
+            try {
+              fs.writeFileSync(envFile, content, { encoding: 'utf8', flag: 'w' });
+              console.log(`Saved to ${envFile}`);
+              // ensure .env.local is gitignored
+              try {
+                const gi = '.gitignore';
+                let giContent = '';
+                if (fs.existsSync(gi)) giContent = fs.readFileSync(gi, 'utf8');
+                if (!giContent.includes(envFile)) {
+                  fs.appendFileSync(gi, `\n${envFile}\n`, { encoding: 'utf8' });
+                  console.log(`Appended ${envFile} to .gitignore`);
+                }
+              } catch (e) {
+                // ignore gitignore write errors
+              }
+            } catch (e) {
+              console.warn('Failed to save .env.local:', e.message || e);
+            }
+          }
+        }
+      } else {
+        console.log('No MANIFEST_ADMIN_URL configured. If your manifest-bot instance watches Mongo change-streams, it will pick up the new entry automatically.');
+      }
     }
 
     if (!MANIFEST_ADMIN_URL && DISCORD_WEBHOOK) {
