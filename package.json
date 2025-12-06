@@ -10,6 +10,7 @@
     "test-db": "node test-db.js",
     "test-mongo": "node test-mongo.js",
     "migrate-games-mongo": "node migrate-games-mongo.js"
+    
   },
   "dependencies": {
     "@octokit/rest": "^20.1.2",
