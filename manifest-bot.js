@@ -2272,10 +2272,11 @@ async function checkAllGames() {
         res.send(html);
       });
 
-      const port = Number(process.env.CONTROL_PORT || 3000);
-      // Bind explicitly to 0.0.0.0 to ensure IPv4 localhost (127.0.0.1) can connect
+      // Prefer platform-provided PORT (e.g., Railway) then CONTROL_PORT, fallback 3000
+      const port = Number(process.env.PORT || process.env.CONTROL_PORT || 3000);
+      // Bind explicitly to 0.0.0.0 to ensure external connections (and IPv4) can connect
       controlServer = app.listen(port, '0.0.0.0', () => {
-        console.log(`🔧 Control server listening on 0.0.0.0:${port} (ADMIN_TOKEN set)`);
+        console.log(`🔧 Control server listening on 0.0.0.0:${port} (ADMIN_TOKEN set). Using process.env.PORT=${process.env.PORT || ''} process.env.CONTROL_PORT=${process.env.CONTROL_PORT || ''}`);
       });
     } catch (err) {
       console.warn('Control server failed to start (missing dependency express?). To enable, `npm install express body-parser`');
