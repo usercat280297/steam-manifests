@@ -29,14 +29,50 @@ const CONFIG = {
   USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 };
 
+// Additional crawling options
+CONFIG.SOURCES.SEARCH_LETTERS = true; // search by starting letter (A-Z, 0-9)
+CONFIG.SOURCES.ID_PROBE = true; // probe numeric appId ranges for existence
+CONFIG.ID_PROBE = {
+  START: parseInt(process.env.ID_PROBE_START || '1', 10),
+  END: parseInt(process.env.ID_PROBE_END || '5000000', 10),
+  STEP: parseInt(process.env.ID_PROBE_STEP || '1000', 10),
+  MAX_CHECKS: parseInt(process.env.ID_PROBE_MAX_CHECKS || '500', 10)
+};
+
+// Optional MongoDB support: if MONGODB_URI set, insert verified games directly
+const MONGODB_URI = process.env.MONGODB_URI || null;
+let autoMongoClient = null;
+let autoMongoDb = null;
+async function initAutoMongo() {
+  if (!MONGODB_URI) return;
+  try {
+    const { MongoClient } = require('mongodb');
+    autoMongoClient = new MongoClient(MONGODB_URI, { connectTimeoutMS: 10000, serverSelectionTimeoutMS: 10000 });
+    await autoMongoClient.connect();
+    autoMongoDb = autoMongoClient.db();
+    await autoMongoDb.collection('games').createIndex({ appId: 1 }, { unique: true });
+    console.log('🔌 auto-populate: Connected to MongoDB');
+  } catch (err) {
+    console.error('❌ auto-populate Mongo init error:', err.message || err);
+    autoMongoClient = null;
+    autoMongoDb = null;
+  }
+}
+
 // Tags to crawl (common Steam tags). Add/remove tags as desired.
 CONFIG.TAGS = [
   'Action','Adventure','Indie','RPG','Strategy','Simulation','Sports','Racing','Horror','Puzzle',
   'Casual','Early Access','Multiplayer','Co-op','Singleplayer','Shooter','Fighting','Platformer',
   'Survival','Open World','MMO','Card Game','Sandbox','VR','Family Friendly','Visual Novel','Stealth',
-  'Roguelike','City Builder','Economy','Metroidvania'
+  'Roguelike','City Builder','Economy','Metroidvania',
+  // Additional tags to broaden coverage
+  'Turn-Based','Tactical','Card & Board Game','Card Game','Action RPG','ARPG','Metroidvania','Roguelite',
+  'Tower Defense','Bullet Hell','Puzzle-Platformer','Platformer 2D','3D Platformer','Atmospheric','Narrative',
+  'Text-Based','Visual Novel','Dating Sim','Fighting Game','Beat em up','Rhythm','Music','Sports Management',
+  'MMORPG','Sandbox Survival','Base Building','Management','Educational','Family','Horror Indie','Hidden Object',
+  'Strategy RPG','Grand Strategy','MOBA','Party Game','Local Co-Op','Online Co-Op','Controller Support','Steam Workshop'
 ];
-CONFIG.TAG_PAGES = parseInt(process.env.TAG_PAGES || '4', 10); // pages per tag (50 results/page)
+CONFIG.TAG_PAGES = parseInt(process.env.TAG_PAGES || '24', 10); // pages per tag (50 results/page)
 
 // Existing games to avoid duplicates
 let existingGames = [];
@@ -57,34 +93,26 @@ const newGames = [];
  */
 async function getFromSteamDBChart() {
   console.log("\n🔍 Fetching from SteamDB Charts...");
-  
   try {
-    const response = await axios.get('https://steamdb.info/charts/', {
-      headers: { 'User-Agent': CONFIG.USER_AGENT },
-      timeout: 15000
-    });
-    
+    // retry with backoff if transient errors (403/5xx)
+    const response = await axiosWithRetries('https://steamdb.info/charts/', { headers: { 'User-Agent': CONFIG.USER_AGENT }, timeout: 15000 }, 3);
     const $ = cheerio.load(response.data);
     const games = [];
-    
+
     // Parse table rows
     $('table tbody tr').each((i, row) => {
       if (i >= CONFIG.MAX_GAMES) return false;
-      
+
       const $row = $(row);
       const appId = $row.find('td').eq(2).find('a').attr('href')?.match(/\/app\/(\d+)/)?.[1];
       const name = $row.find('td').eq(2).find('a').text().trim();
-      
+
       if (appId && name && !existingAppIds.has(parseInt(appId))) {
-        games.push({
-          name: name,
-          appId: parseInt(appId)
-        });
+        games.push({ name: name, appId: parseInt(appId) });
         existingAppIds.add(parseInt(appId));
       }
     });
-    
-    
+
     console.log(`✅ Found ${games.length} new games from SteamDB Charts`);
     return games;
   } catch (error) {
@@ -250,10 +278,7 @@ function getManualGames() {
 async function getFromSteamAppList(target) {
   console.log(`\n🔍 Fetching from Steam AppList (target candidates: ${target})...`);
   try {
-    const response = await axios.get('https://api.steampowered.com/ISteamApps/GetAppList/v2/', {
-      headers: { 'User-Agent': CONFIG.USER_AGENT },
-      timeout: 20000
-    });
+    const response = await axiosWithRetries('https://api.steampowered.com/ISteamApps/GetAppList/v2/', { headers: { 'User-Agent': CONFIG.USER_AGENT }, timeout: 20000 }, 3);
 
     const apps = response.data.applist?.apps || [];
     const games = [];
@@ -272,6 +297,29 @@ async function getFromSteamAppList(target) {
   } catch (error) {
     console.error(`❌ AppList failed:`, error.message);
     return [];
+  }
+}
+
+/**
+ * Utility: axios with retries and exponential backoff
+ */
+async function axiosWithRetries(url, opts = {}, retries = 3) {
+  let attempt = 0;
+  while (true) {
+    try {
+      attempt++;
+      return await axios.get(url, opts);
+    } catch (err) {
+      const status = err?.response?.status;
+      // if client error other than 429, don't retry
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        throw err;
+      }
+      if (attempt >= retries) throw err;
+      const wait = 1000 * Math.pow(2, attempt);
+      console.warn(`Retrying ${url} (attempt ${attempt + 1}) after ${wait}ms due to:`, err.message || err);
+      await new Promise(r => setTimeout(r, wait));
+    }
   }
 }
 
@@ -312,6 +360,65 @@ async function getFromSteamTag(tag, pages = 3) {
     console.error(`❌ Tag ${tag} failed:`, err.message);
     return results;
   }
+}
+
+/**
+ * Crawl store search by starting letter/term
+ */
+async function getFromLetterSearch(letter, pages = 3) {
+  console.log(`\n🔍 Letter search: ${letter} (pages ${pages})`);
+  const results = [];
+  try {
+    for (let p = 0; p < pages; p++) {
+      const start = p * 50;
+      const url = `https://store.steampowered.com/search/results/?query=${encodeURIComponent(letter)}&start=${start}&count=50&cc=US`;
+      const resp = await axios.get(url, { headers: { 'User-Agent': CONFIG.USER_AGENT }, timeout: 15000 });
+      const html = resp.data.results_html || resp.data;
+      const $ = cheerio.load(html);
+
+      $('a.search_result_row').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        const m = href.match(/\/app\/(\d+)/);
+        const name = $(el).find('.title').text().trim() || $(el).attr('data-ds-appid') || '';
+        if (m) {
+          const appId = parseInt(m[1], 10);
+          if (appId && !existingAppIds.has(appId)) {
+            results.push({ name: name || String(appId), appId });
+            existingAppIds.add(appId);
+          }
+        }
+      });
+
+      await new Promise(r => setTimeout(r, 700));
+    }
+    console.log(`✅ Letter ${letter}: found ${results.length} candidates`);
+    return results;
+  } catch (err) {
+    console.error(`❌ Letter ${letter} failed:`, err.message);
+    return results;
+  }
+}
+
+/**
+ * Probe numeric appId ranges by sampling to discover valid apps
+ */
+async function probeAppIdRange(start, end, step, maxChecks) {
+  console.log(`\n🔍 Probing appId range ${start}-${end} step ${step} (max ${maxChecks})`);
+  const results = [];
+  let checks = 0;
+  for (let id = start; id <= end && checks < maxChecks; id += step) {
+    if (existingAppIds.has(id)) continue;
+    checks++;
+    const name = await verifyGame(id);
+    if (name) {
+      results.push({ name, appId: id });
+      existingAppIds.add(id);
+      console.log(`✅ Probe found: ${name} (${id})`);
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  console.log(`✅ Probe finished. Found ${results.length} apps`);
+  return results;
 }
 
 /**
@@ -429,6 +536,8 @@ function saveGamesToExpanded(newEntries) {
 async function main() {
   console.log("🚀 Auto-populate games.json");
   console.log(`📊 Current games: ${existingGames.length}\n`);
+  // Init optional Mongo connection for direct upserts
+  await initAutoMongo();
   
   const allNewGames = [];
   
@@ -461,6 +570,17 @@ async function main() {
     allNewGames.push(...candidates);
   }
 
+  if (CONFIG.SOURCES.SEARCH_LETTERS) {
+    console.log('\n🔍 Starting letter-based searches...');
+    const letters = 'abcdefghijklmnopqrstuvwxyz0123456789'.split('');
+    for (const ch of letters) {
+      const found = await getFromLetterSearch(ch, Math.max(1, Math.floor(CONFIG.TAG_PAGES / 6)));
+      allNewGames.push(...found);
+      if (allNewGames.length >= CONFIG.TARGET * 3) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
   if (CONFIG.SOURCES.TAG_SEARCH) {
     console.log('\n🔍 Starting tag-based crawling...');
     for (const tag of CONFIG.TAGS) {
@@ -471,6 +591,11 @@ async function main() {
       // small pause between tags
       await new Promise(r => setTimeout(r, 1200));
     }
+  }
+
+  if (CONFIG.SOURCES.ID_PROBE) {
+    const probe = await probeAppIdRange(CONFIG.ID_PROBE.START, CONFIG.ID_PROBE.END, CONFIG.ID_PROBE.STEP, CONFIG.ID_PROBE.MAX_CHECKS);
+    allNewGames.push(...probe);
   }
   
   console.log(`\n📊 Total new games found: ${allNewGames.length}`);
@@ -501,6 +626,28 @@ async function main() {
 
   // Append verified entries to games-expanded.json (merge later)
   saveGamesToExpanded(finalGames);
+
+  // If Mongo is configured, upsert verified games into `games` collection so bot or other services pick them up
+  if (autoMongoDb && finalGames && finalGames.length > 0) {
+    console.log('\n🔁 Upserting verified games into MongoDB...');
+    let created = 0, updated = 0;
+    for (const g of finalGames) {
+      try {
+        const res = await autoMongoDb.collection('games').updateOne(
+          { appId: Number(g.appId) },
+          { $set: { appId: Number(g.appId), name: g.name || null, updated_at: new Date() }, $setOnInsert: { created_at: new Date() } },
+          { upsert: true }
+        );
+        if (res.upsertedCount && res.upsertedCount > 0) created++;
+        else if (res.modifiedCount && res.modifiedCount > 0) updated++;
+      } catch (err) {
+        console.error('❌ Mongo upsert error for', g.appId, err.message || err);
+      }
+      // small delay to avoid bursts
+      await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`✅ Mongo upsert complete. Created: ${created}, Updated: ${updated}`);
+  }
   
   console.log("\n✨ Done!");
 }

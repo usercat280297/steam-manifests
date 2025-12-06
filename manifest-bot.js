@@ -1144,6 +1144,18 @@ async function getGameInfo(appId) {
       reviewText = `Metacritic ${gameData.metacritic.score}% | ${reviewText}`;
     }
 
+    // Detect anti-tamper mentions (Denuvo, anti-tamper keywords) by scanning available text
+    const combinedText = [
+      gameData.short_description,
+      gameData.about_the_game,
+      (gameData?.categories || []).map(c => c.description).join(' '),
+      (gameData?.genres || []).map(g => g.description).join(' ')
+    ].filter(Boolean).join('\n');
+
+    const antiTamperMatch = String(combinedText).match(/(denuvo|anti-?tamper|anti tamper)/i);
+    const antiTamper = antiTamperMatch ? true : false;
+    const antiTamperName = antiTamperMatch ? antiTamperMatch[0] : null;
+
     return {
       headerImage: gameData.header_image || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`,
       reviews: reviewText,
@@ -1154,7 +1166,9 @@ async function getGameInfo(appId) {
       developers: gameData.developers || [],
       publishers: gameData.publishers || [],
       genres: gameData.genres?.map(g => g.description) || [],
-      categories: gameData.categories?.map(c => c.description) || []
+      categories: gameData.categories?.map(c => c.description) || [],
+      antiTamper: antiTamper,
+      antiTamperDetail: antiTamperName
     };
   } catch (error) {
     logDetailed(`Game info failed: ${error.message}`);
@@ -1413,8 +1427,7 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId, retryCount
       `## Links`,
       `- [Steam Store](https://store.steampowered.com/app/${appId})`,
       `- [SteamDB](https://steamdb.info/app/${appId})`,
-      ``,
-      `*For educational purposes only*`
+      ``
     ].join('\n');
     
     const release = await octokit.repos.createRelease({
@@ -1484,11 +1497,71 @@ async function uploadToGitHub(fileName, fileContent, gameName, appId, retryCount
 // 💬 DISCORD WEBHOOK - SUCCESS (ĐÃ SỬA - THÊM LINK DOWNLOAD)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Probe SteamDB page for anti-tamper mentions (Denuvo etc.)
+ * Returns { found: boolean, detail: string|null }
+ */
+async function checkSteamDBAntiTamper(appId) {
+  // Supports optional proxy via env STEAMDB_PROXY (eg http://host:port)
+  const maxRetries = parseInt(process.env.STEAMDB_PROBE_RETRIES || '3', 10);
+  const waitBase = 800; // ms
+  const url = 'https://steamdb.info/app/' + encodeURIComponent(appId) + '/';
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const opts = { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 8000 };
+      // If STEAMDB_PROXY set, parse and use axios proxy option
+      if (process.env.STEAMDB_PROXY) {
+        try {
+          const p = new URL(process.env.STEAMDB_PROXY);
+          opts.proxy = { host: p.hostname, port: Number(p.port || (p.protocol === 'https:' ? 443 : 80)) };
+          if (p.username || p.password) opts.proxy.auth = { username: decodeURIComponent(p.username), password: decodeURIComponent(p.password) };
+        } catch (e) {
+          // ignore proxy parse errors
+        }
+      }
+
+      const resp = await axios.get(url, opts);
+      const html = resp.data || '';
+      const re = /(Denuvo|Denuvo Anti-tamper|Anti-?Tamper|Anti ?Tamper)/i;
+      const m = html.match(re);
+      if (m) return { found: true, detail: m[0] };
+      if (/Denuvo/i.test(html)) return { found: true, detail: 'Denuvo' };
+      return { found: false, detail: null };
+    } catch (err) {
+      // If last attempt, return false; otherwise wait and retry
+      if (attempt === maxRetries) return { found: false, detail: null };
+      const wait = waitBase * Math.pow(2, attempt - 1);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+}
+
+/**
+ * Attempt to fetch a header image from SteamDB (og:image) as a fallback
+ */
+async function getHeaderImageFromSteamDB(appId) {
+  try {
+    const url = 'https://steamdb.info/app/' + encodeURIComponent(appId) + '/';
+    const resp = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 8000 });
+    const html = resp.data || '';
+    // match og:image meta
+    const m = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+    if (m && m[1]) return m[1];
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+
+
 async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo) {
-  const totalManifests = depots.filter(d => !d.isDLC).length;
-  const validManifests = depots.filter(d => !d.isDLC && d.manifestId && d.manifestId !== '0').length;
-  
-  const dlcDepots = depots.filter(d => d.isDLC);
+  const totalManifests = depots.filter(d => !(d.isDLC || /dlc/i.test(String(d.type || d.name || '')))).length;
+  const validManifests = depots.filter(d => !(d.isDLC || /dlc/i.test(String(d.type || d.name || ''))) && d.manifestId && d.manifestId !== '0').length;
+
+  // Robust DLC detection: consider explicit flag, type or name containing 'dlc'
+  const dlcDepots = depots.filter(d => d.isDLC || /dlc/i.test(String(d.type || d.name || '')));
   const dlcTotal = dlcDepots.length;
   const dlcValid = dlcDepots.filter(d => d.manifestId && d.manifestId !== '0').length;
   const dlcCompletion = dlcTotal > 0 ? ((dlcValid / dlcTotal) * 100).toFixed(1) : '0.0';
@@ -1502,20 +1575,37 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   } else {
     manifestStatus = `⚠️ ${validManifests}/${totalManifests} manifests available`;
   }
-  
+
   const hasMock = depots.some(d => d.isMock);
   if (hasMock) {
     manifestStatus += `\n⚠️ Contains mock data`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 🔗 TẠO LINKS VALUE - THÊM LINK DOWNLOAD NẾU CÓ
+  // 🔗 LINKS
   // ═══════════════════════════════════════════════════════════════════════
   let linksValue = `[Steam Store](${steamStoreUrl}) | [SteamDB](${steamDbUrl})`;
-  
-  // ✅ THÊM LINK DOWNLOAD VÀO ĐÂY
-  if (uploadResult?.downloadUrl) {
-    linksValue += ` | [📥 Download .lua](${uploadResult.downloadUrl})`;
+  if (uploadResult?.downloadUrl) linksValue += ` | [📥 Download .lua](${uploadResult.downloadUrl})`;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🔍 HEADER IMAGE: prefer gameInfo, then verify Steam header, otherwise try SteamDB og:image
+  // ═══════════════════════════════════════════════════════════════════════
+  let headerImageCandidate = gameInfo?.headerImage || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`;
+  try {
+    // quick HEAD check to avoid embedding 404 images
+    const headResp = await axios.head(headerImageCandidate, { timeout: 5000, maxRedirects: 3, validateStatus: s => s >= 200 && s < 400 });
+    if (!headResp || headResp.status >= 400) {
+      const alt = await getHeaderImageFromSteamDB(appId);
+      if (alt) headerImageCandidate = alt;
+    }
+  } catch (err) {
+    // try steamdb fallback
+    try {
+      const alt = await getHeaderImageFromSteamDB(appId);
+      if (alt) headerImageCandidate = alt;
+    } catch (e) {
+      // ignore, keep whatever candidate we have
+    }
   }
 
   const embed = {
@@ -1525,46 +1615,26 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         icon_url: "https://cdn.discordapp.com/emojis/843169324686409749.png"
       },
       title: `✅ Manifest Generated: ${gameName}`,
-      description: `Successfully generated manifest files for **${gameName}** (${appId})\n\n*For Educational Purpose Only*`,
+      description: `Successfully generated manifest files for **${gameName}** (${appId})`,
       color: CONFIG.COLORS.SUCCESS,
-      
+
+      thumbnail: { url: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_184x69.jpg` },
+
       fields: [
-        {
-          name: "🔗 Links",
-          value: linksValue,  // ✅ SỬ DỤNG BIẾN MỚI CÓ LINK DOWNLOAD
-          inline: false
-        },
-        {
-          name: "⭐ Reviews",
-          value: gameInfo?.reviews || 'N/A',
-          inline: true
-        },
-        {
-          name: "👥 Total Reviews",
-          value: gameInfo?.reviewCount ? `${gameInfo.reviewCount.toLocaleString()}` : 'N/A',
-          inline: true
-        },
-        {
-          name: "💰 Price",
-          value: gameInfo?.price || 'N/A',
-          inline: true
-        },
-        {
-          name: "📦 Manifest Status",
-          value: manifestStatus,
-          inline: false
-        }
+        { name: "🔗 Links", value: linksValue, inline: false },
+        { name: "⭐ Reviews", value: gameInfo?.reviews || 'N/A', inline: true },
+        { name: "👥 Reviews", value: gameInfo?.reviewCount ? `${gameInfo.reviewCount.toLocaleString()}` : 'N/A', inline: true },
+        { name: "💰 Price", value: gameInfo?.price || 'N/A', inline: true },
+        { name: "📦 Manifest Status", value: manifestStatus, inline: false }
       ],
-      
-      image: {
-        url: gameInfo?.headerImage || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
-      },
-      
+
+      image: { url: headerImageCandidate },
+
       footer: {
         text: `Hôm nay lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
         icon_url: "https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Steam_icon_logo.svg/2048px-Steam_icon_logo.svg.png"
       },
-      
+
       timestamp: new Date().toISOString()
     }]
   };
@@ -1580,6 +1650,28 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
     });
   }
 
+  // ═════════════════════════════════════════════════════════════════════
+  // ⚠️ IMPORTANT NOTES - DENUVO / ANTI-TAMPER DETECTION
+  // ═════════════════════════════════════════════════════════════════════
+  // If initial metadata didn't detect anti-tamper, try SteamDB probe for stronger detection
+  try {
+    if (!gameInfo?.antiTamper) {
+      const sd = await checkSteamDBAntiTamper(appId);
+      if (sd?.found) {
+        const msg = `⚠️ NOTICE: ${sd.detail || 'Anti-tamper protection detected (Denuvo)'}.`;
+        embed.embeds[0].fields.push({ name: "Important Notes", value: msg + ' Game may require additional configuration for offline play.', inline: false });
+        embed.embeds[0].color = CONFIG.COLORS.WARNING;
+      }
+    } else {
+      const msg = `⚠️ NOTICE: ${gameInfo.antiTamperDetail || 'Anti-tamper protection detected'}. Game may require additional configuration for offline play.`;
+      embed.embeds[0].fields.push({ name: "Important Notes", value: msg, inline: false });
+      embed.embeds[0].color = CONFIG.COLORS.WARNING;
+    }
+  } catch (err) {
+    // ignore probe failures
+    logDetailed(`SteamDB anti-tamper probe failed: ${err.message}`);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // ⚠️ THÊM NOTE NẾU KHÔNG CÓ LINK DOWNLOAD
   // ═══════════════════════════════════════════════════════════════════════
@@ -1590,6 +1682,9 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
       inline: false
     });
   }
+
+  // If header image is missing, attempt to fetch from SteamDB og:image
+  // header image is already selected above using a HEAD check and steamdb fallback
 
   // ❌ XÓA PHẦN COMPONENTS - WEBHOOK KHÔNG HỖ TRỢ BUTTONS
   // embed.components = [...] <-- KHÔNG CẦN NỮA
@@ -1961,11 +2056,44 @@ async function checkAllGames() {
   if (MONGODB_URI) {
     console.log('ℹ️ MONGODB_URI detected — using MongoDB for persistence');
     await initMongo();
-    if (process.env.IMPORT_GAMES_JSON === 'true') {
-      await importGamesJsonToMongo();
+    if (!mongoDb) {
+      console.warn('⚠️ Mongo initialization failed; continuing without MongoDB persistence.');
+    } else {
+      if (process.env.IMPORT_GAMES_JSON === 'true') {
+        await importGamesJsonToMongo();
+      }
+      const dbGames = await loadGamesFromMongo();
+      if (dbGames && dbGames.length > 0) games = dbGames;
+      // After loading games from Mongo, set up a change stream so any external inserts/updates
+      // into the `games` collection trigger immediate processing without restarting the bot.
+      try {
+        const coll = mongoDb.collection('games');
+        // watch for insert/update/replace
+        const changeStream = coll.watch([{ $match: { operationType: { $in: ['insert', 'update', 'replace'] } } }], { fullDocument: 'updateLookup' });
+        changeStream.on('change', async (change) => {
+          try {
+            const doc = change.fullDocument;
+            if (!doc || !doc.appId) return;
+            const appId = Number(doc.appId);
+            console.log(`\n🔔 MongoDB change detected: ${change.operationType} ${appId}`);
+            const game = { name: doc.name || `App ${appId}`, appId };
+            // ensure local games list contains it
+            if (!games.find(g => Number(g.appId) === appId)) {
+              games.push(game);
+            }
+            // Trigger processing in background
+            checkGameManifest(game, games.findIndex(g => Number(g.appId) === appId) + 1, games.length)
+              .then(() => console.log(`ChangeStream: processed ${appId}`))
+              .catch(err => console.error('ChangeStream processing error:', err));
+          } catch (err) {
+            console.error('ChangeStream handler error:', err.message || err);
+          }
+        });
+        console.log('🔁 MongoDB change stream established for `games` collection');
+      } catch (err) {
+        console.warn('⚠️ Could not establish MongoDB change stream:', err.message || err);
+      }
     }
-    const dbGames = await loadGamesFromMongo();
-    if (dbGames && dbGames.length > 0) games = dbGames;
   } else if (DATABASE_URL) {
     console.log('ℹ️ DATABASE_URL detected — using PostgreSQL for persistence');
     await initDb();
@@ -1990,6 +2118,16 @@ async function checkAllGames() {
 
       app.post('/process', async (req, res) => {
         try {
+          // Debug: log incoming control requests (mask token presence)
+          try {
+            const hasHeader = !!req.headers['x-admin-token'];
+            const hasQuery = !!req.query.token;
+            const hasBodyToken = !!req.body?.token;
+            console.log(`Control API: POST /process - header_token:${hasHeader} query_token:${hasQuery} body_token:${hasBodyToken}`);
+            console.log('Control API: body sample:', JSON.stringify(req.body));
+          } catch (e) {
+            console.log('Control API: debug log failed', e.message || e);
+          }
           const token = req.headers['x-admin-token'] || req.query.token || req.body.token;
           if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
           const appId = req.body.appId || req.query.appId;
@@ -2134,8 +2272,11 @@ async function checkAllGames() {
         res.send(html);
       });
 
-      const port = process.env.CONTROL_PORT || 3000;
-      controlServer = app.listen(port, () => console.log(`🔧 Control server listening on port ${port} (ADMIN_TOKEN set)`));
+      const port = Number(process.env.CONTROL_PORT || 3000);
+      // Bind explicitly to 0.0.0.0 to ensure IPv4 localhost (127.0.0.1) can connect
+      controlServer = app.listen(port, '0.0.0.0', () => {
+        console.log(`🔧 Control server listening on 0.0.0.0:${port} (ADMIN_TOKEN set)`);
+      });
     } catch (err) {
       console.warn('Control server failed to start (missing dependency express?). To enable, `npm install express body-parser`');
     }
