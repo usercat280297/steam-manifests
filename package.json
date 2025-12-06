@@ -29,7 +29,6 @@
     "node": ">=20.18.1"
   },
   "optionalDependencies": {
-    "mongodb": "^7.0.0",
-    "pg": "*"
+    "mongodb": "^7.0.0"
   }
 }
