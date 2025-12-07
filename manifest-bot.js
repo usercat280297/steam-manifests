@@ -39,7 +39,8 @@ const CONFIG = {
   
   // ⏰ Timing Configuration
   CHECK_INTERVAL: 12 * 60 * 60 * 1000,    // Check all games every 12 hours
-  MESSAGE_INTERVAL: 10 * 1000,            // Send Discord messages every 10 seconds (change to 3*60*1000 for production)
+  MESSAGE_INTERVAL: 3 * 1000,             // Send Discord messages every 3 seconds (faster queue processing)
+  MESSAGES_PER_BATCH: 1,                  // Process 1 message per interval (increase for faster sending)
   STEAM_DELAY: 2000,                      // 2 seconds between Steam API calls
   STEAMDB_DELAY: 5000,                    // 5 seconds for SteamDB (more strict)
   STEAMCMD_DELAY: 1500,                   // 1.5 seconds for SteamCMD API
@@ -262,7 +263,7 @@ async function importGamesJsonToMongo() {
 let games = [];
 let lastManifestIds = {};
 let lastBuildIds = {};
-const messageQueue = [];
+let messageQueue = [];
 let userAgentIndex = 0;
 
 let statistics = {
@@ -332,6 +333,19 @@ try {
   lastBuildIds = {};
 }
 
+// 📬 LOAD MESSAGE QUEUE FROM PERSISTENT STORAGE
+const MESSAGE_QUEUE_FILE = './message_queue.json';
+try {
+  if (fs.existsSync(MESSAGE_QUEUE_FILE)) {
+    const queueData = fs.readFileSync(MESSAGE_QUEUE_FILE, 'utf8');
+    messageQueue = JSON.parse(queueData);
+    console.log(`📬 Loaded ${messageQueue.length} pending Discord messages from queue`);
+  }
+} catch (error) {
+  console.warn("⚠️  Could not load message queue:", error.message);
+  messageQueue = [];
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 💾 STATE PERSISTENCE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -340,7 +354,8 @@ function saveState() {
   try {
     fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(lastManifestIds, null, 2));
     fs.writeFileSync(CONFIG.BUILD_STATE_FILE, JSON.stringify(lastBuildIds, null, 2));
-    console.log(`💾 State saved: ${Object.keys(lastManifestIds).length} manifests, ${Object.keys(lastBuildIds).length} builds`);
+    fs.writeFileSync(MESSAGE_QUEUE_FILE, JSON.stringify(messageQueue, null, 2));
+    console.log(`💾 State saved: ${Object.keys(lastManifestIds).length} manifests, ${messageQueue.length} pending messages`);
   } catch (error) {
     console.error("❌ Save error:", error.message);
   }
@@ -1912,57 +1927,64 @@ async function createFailedEmbed(gameName, appId, gameInfo) {
 async function processQueue() {
   if (messageQueue.length === 0) return;
 
-  const message = messageQueue.shift();
-  console.log(`\n📤 Processing: ${message.gameName}`);
-  console.log(`   Queue: ${messageQueue.length} remaining`);
+  // Process multiple messages per interval (default: 1)
+  const batchSize = CONFIG.MESSAGES_PER_BATCH || 1;
+  const toProcess = Math.min(batchSize, messageQueue.length);
   
-  try {
-    let payload;
+  for (let i = 0; i < toProcess; i++) {
+    const message = messageQueue.shift();
     
-    if (message.failed) {
-      console.log(`   ❌ Creating FAILED embed`);
-      payload = await createFailedEmbed(
-        message.gameName,
-        message.appId,
-        message.gameInfo
-      );
-    } else {
-      console.log(`   ✅ Creating SUCCESS embed`);
-      payload = await createDiscordEmbed(
-        message.gameName,
-        message.appId,
-        message.depots,
-        message.uploadResult,
-        message.gameInfo,
-        message.localization // ✨ Pass Vietnamese localization
-      );
-    }
+    console.log(`\n📤 Processing: ${message.gameName}`);
+    console.log(`   Queue: ${messageQueue.length} remaining`);
     
-    console.log(`   🌐 Sending to Discord...`);
-    
-    const response = await axios.post(CONFIG.DISCORD_WEBHOOK, payload, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 10000
-    });
-    
-    console.log(`✅ Sent (${response.status})`);
-    statistics.totalSent++;
-    
-  } catch (error) {
-    console.error(`\n❌ Discord error: ${message.gameName}`);
-    console.error(`   ${error.response?.status}: ${error.message}`);
-    
-    if (error.response?.data) {
-      console.error(`   Data:`, JSON.stringify(error.response.data, null, 2));
-    }
-    
-    if (error.response?.status === 429) {
-      const retryAfter = error.response.data?.retry_after || 5;
-      console.log(`   ⏳ Rate limit, retry in ${retryAfter}s`);
-      messageQueue.unshift(message);
-      await sleep(retryAfter * 1000);
-    } else {
-      statistics.totalErrors++;
+    try {
+      let payload;
+      
+      if (message.failed) {
+        console.log(`   ❌ Creating FAILED embed`);
+        payload = await createFailedEmbed(
+          message.gameName,
+          message.appId,
+          message.gameInfo
+        );
+      } else {
+        console.log(`   ✅ Creating SUCCESS embed`);
+        payload = await createDiscordEmbed(
+          message.gameName,
+          message.appId,
+          message.depots,
+          message.uploadResult,
+          message.gameInfo,
+          message.localization // ✨ Pass Vietnamese localization
+        );
+      }
+      
+      console.log(`   🌐 Sending to Discord...`);
+      
+      const response = await axios.post(CONFIG.DISCORD_WEBHOOK, payload, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 10000
+      });
+      
+      console.log(`✅ Sent (${response.status})`);
+      statistics.totalSent++;
+      
+    } catch (error) {
+      console.error(`\n❌ Discord error: ${message.gameName}`);
+      console.error(`   ${error.response?.status}: ${error.message}`);
+      
+      if (error.response?.data) {
+        console.error(`   Data:`, JSON.stringify(error.response.data, null, 2));
+      }
+      
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data?.retry_after || 5;
+        console.log(`   ⏳ Rate limit, retry in ${retryAfter}s`);
+        messageQueue.unshift(message);
+        await sleep(retryAfter * 1000);
+      } else {
+        statistics.totalErrors++;
+      }
     }
   }
 }
