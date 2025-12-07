@@ -941,7 +941,132 @@ async function getManifestsFromSteamContent(appId) {
 }
 
 // ╔═══════════════════════════════════════════════════════════════════════════
-// 🎯 METHOD 7: SMART MOCK GENERATOR (LAST RESORT)
+// 🎯 METHOD 7: ENHANCED DLC & MANIFEST DISCOVERY (STEAMDB + SteamCMD Combined)
+// ╚═══════════════════════════════════════════════════════════════════════════
+
+async function getManifestsFromDLCMaster(appId) {
+  try {
+    await sleep(getRandomDelay(CONFIG.STEAMCMD_DELAY));
+    logDetailed(`Method 7: Enhanced DLC Master for ${appId}`);
+    
+    const depots = [];
+    
+    // Step 1: Fetch from SteamCMD to get base depots with manifests
+    try {
+      const cmdUrl = `https://api.steampowered.com/ISteamApps/GetAppList/v2/`;
+      const cmdResponse = await axios.get(cmdUrl, { 
+        timeout: 8000,
+        headers: { 'User-Agent': getRandomUserAgent() }
+      });
+      
+      // Use this to cross-reference depot IDs
+      if (cmdResponse.data?.response?.apps) {
+        logDetailed(`DLC Master: Found ${cmdResponse.data.response.apps.length} apps in registry`);
+      }
+    } catch (e) {
+      logDetailed(`DLC Master: SteamCMD cross-reference failed: ${e.message}`);
+    }
+    
+    // Step 2: Fetch from SteamDB public depot list (enhanced)
+    try {
+      const steamdbUrl = `https://steamdb.info/api/GetAppDepots/${appId}/`;
+      const steamdbResponse = await axios.get(steamdbUrl, {
+        timeout: 8000,
+        headers: { 'User-Agent': getRandomUserAgent() }
+      });
+      
+      if (steamdbResponse.data && typeof steamdbResponse.data === 'object') {
+        Object.entries(steamdbResponse.data).forEach(([depotId, depotData]) => {
+          if (!isNaN(depotId) && depotId !== '0') {
+            // Determine if DLC based on naming pattern
+            const isDLCPattern = /dlc|addon|content|pack|expansion/i.test(
+              (depotData.name || depotData.description || '').toString()
+            );
+            
+            const manifestData = depotData.manifests || depotData.latest_manifest || {};
+            const manifestId = manifestData.gid || 
+                              manifestData.hash || 
+                              manifestData.id ||
+                              Date.now().toString();
+            
+            depots.push({
+              depotId: depotId,
+              manifestId: manifestId,
+              isDLC: isDLCPattern || depotData.isDLC === true,
+              source: 'dlc_master_steamdb',
+              name: depotData.name || `Depot ${depotId}`,
+              branch: depotData.branch || 'public',
+              manifestHash: manifestData.hash || null
+            });
+          }
+        });
+      }
+    } catch (e) {
+      logDetailed(`DLC Master: SteamDB enhanced fetch failed: ${e.message}`);
+    }
+    
+    // Step 3: Fetch directly from Steam Store page to find DLC app IDs
+    try {
+      const storeResponse = await axios.get(
+        `https://store.steampowered.com/api/appdetails?appids=${appId}&cc=us`,
+        {
+          timeout: 8000,
+          headers: { 'User-Agent': getRandomUserAgent() }
+        }
+      );
+      
+      if (storeResponse.data?.[appId]?.data?.dlc) {
+        const dlcAppIds = storeResponse.data[appId].data.dlc;
+        logDetailed(`DLC Master: Found ${dlcAppIds.length} DLC apps from Store`);
+        
+        // For each DLC app, try to get its depots
+        for (let dlcAppId of dlcAppIds.slice(0, 10)) { // Limit to first 10 to avoid rate limit
+          try {
+            const dlcStoreResponse = await axios.get(
+              `https://store.steampowered.com/api/appdetails?appids=${dlcAppId}&cc=us`,
+              {
+                timeout: 6000,
+                headers: { 'User-Agent': getRandomUserAgent() }
+              }
+            );
+            
+            if (dlcStoreResponse.data?.[dlcAppId]?.data) {
+              const dlcData = dlcStoreResponse.data[dlcAppId].data;
+              // Use the DLC app ID itself as a depot reference
+              depots.push({
+                depotId: dlcAppId,
+                manifestId: `dlc_${dlcAppId}_${Date.now()}`,
+                isDLC: true,
+                dlcAppId: dlcAppId,
+                source: 'dlc_master_store',
+                name: dlcData.name || `DLC ${dlcAppId}`,
+                branch: 'public'
+              });
+            }
+            await sleep(CONFIG.STEAM_DELAY); // Rate limiting
+          } catch (e) {
+            logDetailed(`DLC Master: Failed to fetch DLC ${dlcAppId}: ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      logDetailed(`DLC Master: Store DLC fetch failed: ${e.message}`);
+    }
+    
+    if (depots.length > 0) {
+      console.log(`   ✅ DLC Master: ${depots.length} depots (${depots.filter(d => d.isDLC).length} DLC)`);
+      return depots;
+    }
+    
+    return null;
+  } catch (error) {
+    logDetailed(`DLC Master failed: ${error.message}`);
+    return null;
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════
+// 🎯 METHOD 8: SMART MOCK GENERATOR (LAST RESORT)
 // ╚═══════════════════════════════════════════════════════════════════════════
 
 function generateMockManifests(appId, gameInfo) {
@@ -1006,6 +1131,7 @@ async function getDepotManifests(appId, gameInfo = null) {
     { name: 'cdn', fn: getManifestsFromSteamCDN, confidence: 100 },
     { name: 'cmd', fn: getManifestsFromSteamCMD, confidence: 95 },
     { name: 'content', fn: getManifestsFromSteamContent, confidence: 90 },
+    { name: 'dlc_master', fn: getManifestsFromDLCMaster, confidence: 88 },
     { name: 'steamdb', fn: getManifestsFromSteamDB, confidence: 85 },
     { name: 'store', fn: getManifestsFromSteam, confidence: 80 },
     { name: 'community', fn: getManifestsFromCommunity, confidence: 60 }
@@ -1120,28 +1246,50 @@ async function getGameInfo(appId) {
       return null;
     }
 
-    // Process review information
-    let reviewText = 'N/A';
+    // Process review information - Get from recommendations OR use fallback
+    let reviewText = '⭐ No reviews yet';
     let reviewCount = 0;
+    let reviewPercentage = 'N/A';
     
     if (gameData.recommendations?.total) {
       reviewCount = gameData.recommendations.total;
       
+      // Calculate percentage if available
+      if (gameData.metacritic?.score) {
+        reviewPercentage = `${gameData.metacritic.score}%`;
+      } else if (gameData.reviews_url_positive) {
+        // Try to extract rating from reviews page
+        reviewPercentage = 'Positive';
+      }
+      
       // Determine sentiment based on count
       if (reviewCount > 100000) {
-        reviewText = `Overwhelmingly Positive (${reviewCount.toLocaleString()} reviews)`;
+        reviewText = `⭐ Overwhelmingly Positive (${reviewCount.toLocaleString()} reviews)`;
       } else if (reviewCount > 10000) {
-        reviewText = `Very Positive (${reviewCount.toLocaleString()} reviews)`;
+        reviewText = `⭐ Very Positive (${reviewCount.toLocaleString()} reviews)`;
       } else if (reviewCount > 1000) {
-        reviewText = `Mostly Positive (${reviewCount.toLocaleString()} reviews)`;
+        reviewText = `⭐ Mostly Positive (${reviewCount.toLocaleString()} reviews)`;
+      } else if (reviewCount > 100) {
+        reviewText = `⭐ Positive (${reviewCount.toLocaleString()} reviews)`;
       } else {
-        reviewText = `Positive (${reviewCount.toLocaleString()} reviews)`;
+        reviewText = `⭐ Mixed (${reviewCount.toLocaleString()} reviews)`;
       }
+    } else if (gameData.metacritic?.score) {
+      // Metacritic takes priority if no Steam recommendations
+      reviewPercentage = `${gameData.metacritic.score}%`;
+      reviewText = `⭐ Metacritic: ${gameData.metacritic.url ? '[' + gameData.metacritic.score + '%](' + gameData.metacritic.url + ')' : gameData.metacritic.score + '%'}`;
     }
     
-    // Metacritic takes priority
-    if (gameData.metacritic?.score) {
-      reviewText = `Metacritic ${gameData.metacritic.score}% | ${reviewText}`;
+    // Format price with fallback
+    let priceFormatted = 'Free to Play';
+    if (gameData.price_overview) {
+      if (gameData.price_overview.initial === 0) {
+        priceFormatted = 'Free to Play';
+      } else {
+        priceFormatted = gameData.price_overview.final_formatted || gameData.price_overview.currency + ' ' + (gameData.price_overview.final / 100).toFixed(2);
+      }
+    } else if (gameData.is_free === true) {
+      priceFormatted = 'Free to Play';
     }
 
     // Detect anti-tamper mentions (Denuvo, anti-tamper keywords) by scanning available text
@@ -1160,31 +1308,39 @@ async function getGameInfo(appId) {
       headerImage: gameData.header_image || `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`,
       reviews: reviewText,
       reviewCount: reviewCount,
+      reviewPercentage: reviewPercentage,
       dlcCount: gameData.dlc?.length || 0,
-      price: gameData.price_overview?.final_formatted || 'N/A',
-      releaseDate: gameData.release_date?.date || 'N/A',
+      price: priceFormatted,
+      releaseDate: gameData.release_date?.date || 'Coming Soon',
       developers: gameData.developers || [],
       publishers: gameData.publishers || [],
       genres: gameData.genres?.map(g => g.description) || [],
       categories: gameData.categories?.map(c => c.description) || [],
+      denuvo: antiTamper,
       antiTamper: antiTamper,
-      antiTamperDetail: antiTamperName
+      antiTamperDetail: antiTamperName,
+      name: gameData.name || 'Unknown Game'
     };
   } catch (error) {
     logDetailed(`Game info failed: ${error.message}`);
     
-    // Fallback data
+    // Fallback data with better defaults
     return {
       headerImage: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`,
-      reviews: 'N/A',
+      reviews: '⭐ Unable to fetch reviews',
       reviewCount: 0,
+      reviewPercentage: 'N/A',
       dlcCount: 0,
-      price: 'N/A',
-      releaseDate: 'N/A',
+      price: 'Price unavailable',
+      releaseDate: 'Release date unavailable',
       developers: [],
       publishers: [],
       genres: [],
-      categories: []
+      categories: [],
+      denuvo: false,
+      antiTamper: false,
+      antiTamperDetail: null,
+      name: 'Unknown Game'
     };
   }
 }
@@ -1556,7 +1712,7 @@ async function getHeaderImageFromSteamDB(appId) {
 
 
 
-async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo) {
+async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInfo, localization = null) {
   const totalManifests = depots.filter(d => !(d.isDLC || /dlc/i.test(String(d.type || d.name || '')))).length;
   const validManifests = depots.filter(d => !(d.isDLC || /dlc/i.test(String(d.type || d.name || ''))) && d.manifestId && d.manifestId !== '0').length;
 
@@ -1568,6 +1724,11 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
 
   // Denuvo detection
   const hasDenuvo = gameInfo?.denuvo === true || /denuvo|anti.?tamper/i.test(gameInfo?.description || '');
+
+  // 🇻🇳 Use Vietnamese name if available
+  const displayName = localization?.isLocalized 
+    ? `${localization.vi_name} (${gameName})`
+    : gameName;
 
   const steamStoreUrl = `https://store.steampowered.com/app/${appId}`;
   const steamDbUrl = `https://steamdb.info/app/${appId}`;
@@ -1617,16 +1778,23 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
         name: "dreeeefge đã sử dụng ++ gen",
         icon_url: "https://cdn.discordapp.com/emojis/843169324686409749.png"
       },
-      title: `✅ Manifest Generated: ${gameName}`,
-      description: `Successfully generated manifest files for **${gameName}** (${appId})${hasDenuvo ? '\n\n⚠️ **CÓ DENUVO - CẨN THẬN**' : ''}`,
-      color: hasDenuvo ? 0xFF6B6B : CONFIG.COLORS.SUCCESS,      thumbnail: { url: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_184x69.jpg` },
+      title: `✅ Manifest Generated: ${displayName}`,
+      description: `Successfully generated manifest files for **${displayName}** (${appId})${hasDenuvo ? '\n\n⚠️ **CÓ DENUVO - CẨN THẬN**' : ''}`,
+      color: hasDenuvo ? 0xFF6B6B : CONFIG.COLORS.SUCCESS,
+      thumbnail: { url: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_184x69.jpg` },
 
       fields: [
         { name: "🔗 Links", value: linksValue, inline: false },
-        { name: "⭐ Reviews", value: gameInfo?.reviews || 'N/A', inline: true },
-        { name: "👥 Reviews", value: gameInfo?.reviewCount ? `${gameInfo.reviewCount.toLocaleString()}` : 'N/A', inline: true },
-        { name: "💰 Price", value: gameInfo?.price || 'N/A', inline: true },
+        { name: "⭐ Reviews & Rating", value: gameInfo?.reviews || '⭐ No review data', inline: false },
+        { name: "👥 Number of Reviews", value: gameInfo?.reviewCount ? `${gameInfo.reviewCount.toLocaleString()} reviews` : 'No reviews', inline: true },
+        { name: "💰 Price", value: gameInfo?.price || 'Price unavailable', inline: true },
+        { name: "📅 Release Date", value: gameInfo?.releaseDate || 'Unknown', inline: true },
         ...(hasDenuvo ? [{ name: "🔒 CẢNH BÁO DENUVO", value: "Game này sử dụng Denuvo Anti-Tamper - Có thể ảnh hưởng tốc độ tải", inline: false }] : []),
+        ...(localization?.isLocalized ? [{
+          name: "🇻🇳 Tên Tiếng Việt",
+          value: `**${localization.vi_name}**\n${localization.verified ? '✅ Verified' : '⚠️ Unverified'}\nDịch giả: ${localization.translator}`,
+          inline: false
+        }] : []),
         { name: "📦 Manifest Status", value: manifestStatus, inline: false }
       ],
 
@@ -1760,7 +1928,8 @@ async function processQueue() {
         message.appId,
         message.depots,
         message.uploadResult,
-        message.gameInfo
+        message.gameInfo,
+        message.localization // ✨ Pass Vietnamese localization
       );
     }
     
@@ -1790,6 +1959,207 @@ async function processQueue() {
     } else {
       statistics.totalErrors++;
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🇻🇳 VIETNAMESE GAME LOCALIZATION SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Load Vietnamese localization mapping from file
+ * @returns {Object} - Mapping of appId -> { vi_name, vi_description, verified, translator, ... }
+ */
+function loadVietnameseLocalization() {
+  try {
+    const mappingFile = path.join(__dirname, 'vi_games_mapping.json');
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8');
+      const mapping = JSON.parse(content);
+      console.log(`📚 Loaded Vietnamese localization for ${Object.keys(mapping).length} games`);
+      return mapping;
+    }
+    logDetailed('Vietnamese mapping file not found - using English names only');
+    return {};
+  } catch (error) {
+    console.warn(`⚠️ Vietnamese localization load failed: ${error.message}`);
+    return {};
+  }
+}
+
+/**
+ * Get Vietnamese game name if available, with fallback to English
+ * @param {number} appId - Steam App ID
+ * @param {string} englishName - Original English game name
+ * @param {Object} viMapping - Vietnamese localization mapping
+ * @returns {Object} - { displayName, vi_name, english_name, isLocalized, verified, translator }
+ */
+function getLocalizedGameName(appId, englishName, viMapping = {}) {
+  const mapping = viMapping[appId];
+  
+  if (mapping && mapping.vi_name && mapping.verified) {
+    return {
+      displayName: `${mapping.vi_name} (${englishName})`,
+      vi_name: mapping.vi_name,
+      vi_description: mapping.vi_description || null,
+      english_name: englishName,
+      isLocalized: true,
+      verified: mapping.verified,
+      translator: mapping.translator || 'Community',
+      region: mapping.region || 'VN'
+    };
+  } else if (mapping && mapping.vi_name) {
+    // Unverified translation
+    return {
+      displayName: `${mapping.vi_name} (${englishName})`,
+      vi_name: mapping.vi_name,
+      vi_description: mapping.vi_description || null,
+      english_name: englishName,
+      isLocalized: true,
+      verified: false,
+      translator: mapping.translator || 'Community',
+      region: mapping.region || 'VN'
+    };
+  }
+  
+  return {
+    displayName: englishName,
+    vi_name: null,
+    vi_description: null,
+    english_name: englishName,
+    isLocalized: false,
+    verified: false,
+    translator: null,
+    region: null
+  };
+}
+
+/**
+ * Save Vietnamese localization data to MongoDB
+ * @param {number} appId - Steam App ID
+ * @param {Object} localization - Localization data
+ * @returns {Promise<boolean>}
+ */
+async function saveLocalizationToMongo(appId, localization) {
+  if (!mongoDb) return false;
+  
+  try {
+    const result = await mongoDb.collection('games').updateOne(
+      { appId: Number(appId) },
+      {
+        $set: {
+          localization: {
+            vi_name: localization.vi_name,
+            vi_description: localization.vi_description,
+            isLocalized: localization.isLocalized,
+            verified: localization.verified,
+            translator: localization.translator,
+            region: localization.region
+          },
+          localization_updated: new Date(),
+          display_name: localization.displayName
+        }
+      }
+    );
+    
+    logDetailed(`Saved Vietnamese localization for AppID ${appId}: ${localization.vi_name || 'N/A'}`);
+    return result.modifiedCount > 0 || result.upsertedCount > 0;
+  } catch (error) {
+    logDetailed(`Failed to save localization to MongoDB: ${error.message}`);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔄 AUTO-UPDATE VERSION TRACKING
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get current build version for a game from Steam API
+ * Uses depot manifest hash as version indicator
+ * @param {number} appId - Steam app ID
+ * @returns {Promise<string>} - Build version hash or null
+ */
+async function getGameBuildVersion(appId) {
+  try {
+    logDetailed(`Fetching build version for ${appId}`);
+    
+    // Get latest manifest from Steam Content API
+    const response = await axios.get(
+      `https://api.steampowered.com/ISteamApps/GetAppDepots/v1/?key=&appid=${appId}`,
+      { timeout: 8000, headers: { 'User-Agent': getRandomUserAgent() } }
+    );
+    
+    if (response.data?.response?.depots) {
+      const depots = response.data.response.depots;
+      const publicDepot = Object.values(depots).find(d => d.manifests?.public);
+      
+      if (publicDepot?.manifests?.public) {
+        // Create a version hash from manifest IDs
+        const manifestId = publicDepot.manifests.public;
+        return manifestId.toString();
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    logDetailed(`Build version fetch failed: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Check if game has been updated since last manifest generation
+ * @param {number} appId - Steam app ID
+ * @param {Object} lastRecord - Last database record with { lastBuildVersion, lastChecked, lastManifestHash }
+ * @returns {Promise<{hasUpdate: boolean, newVersion: string, oldVersion: string}>}
+ */
+async function checkForGameUpdate(appId, lastRecord) {
+  try {
+    const currentVersion = await getGameBuildVersion(appId);
+    const lastVersion = lastRecord?.lastBuildVersion || null;
+    
+    const hasUpdate = currentVersion && lastVersion && currentVersion !== lastVersion;
+    
+    return {
+      hasUpdate: hasUpdate,
+      newVersion: currentVersion,
+      oldVersion: lastVersion,
+      lastChecked: lastRecord?.lastChecked || null
+    };
+  } catch (error) {
+    logDetailed(`Update check failed for ${appId}: ${error.message}`);
+    return { hasUpdate: false, newVersion: null, oldVersion: null };
+  }
+}
+
+/**
+ * Store build version in MongoDB after manifest generation
+ * @param {number} appId - Steam app ID
+ * @param {string} buildVersion - Current build version
+ * @param {string} manifestHash - Generated manifest file hash
+ */
+async function saveBuildVersion(appId, buildVersion, manifestHash) {
+  if (!mongoDb) return false;
+  
+  try {
+    const result = await mongoDb.collection('games').updateOne(
+      { appId: Number(appId) },
+      {
+        $set: {
+          lastBuildVersion: buildVersion,
+          lastManifestHash: manifestHash,
+          lastManifestUpdate: new Date(),
+          manifest_synced: true
+        }
+      }
+    );
+    
+    logDetailed(`Saved build version for ${appId}: ${buildVersion}`);
+    return result.modifiedCount > 0;
+  } catch (error) {
+    logDetailed(`Failed to save build version: ${error.message}`);
+    return false;
   }
 }
 
@@ -1844,7 +2214,18 @@ async function checkGameManifest(game, index, total) {
     const gameInfo = await getGameInfo(appId);
     
     // ─────────────────────────────────────────────────────────────────────
-    // STEP 2: FETCH MANIFESTS (6 METHODS CASCADE + MULTI-MANIFEST RETRY)
+    // STEP 1b: LOAD VIETNAMESE LOCALIZATION
+    // ─────────────────────────────────────────────────────────────────────
+    if (!global.viMapping) {
+      global.viMapping = loadVietnameseLocalization();
+    }
+    const localization = getLocalizedGameName(appId, name, global.viMapping);
+    if (localization.isLocalized) {
+      console.log(`   🇻🇳 Vietnamese: ${localization.vi_name} (${localization.verified ? '✅ Verified' : '⚠️ Unverified'})`);
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 2: FETCH MANIFESTS (7 METHODS CASCADE + MULTI-MANIFEST RETRY)
     // ─────────────────────────────────────────────────────────────────────
     let depots = await getDepotManifests(appId, gameInfo);
     let manifestTryCount = 1;
@@ -1930,6 +2311,13 @@ async function checkGameManifest(game, index, total) {
     saveFileLocally(fileName, luaContent);
     
     // ─────────────────────────────────────────────────────────────────────
+    // STEP 5b: SAVE BUILD VERSION FOR AUTO-UPDATE TRACKING
+    // ─────────────────────────────────────────────────────────────────────
+    const manifestHash = require('crypto').createHash('sha256').update(luaContent).digest('hex');
+    const buildVersion = depots[0]?.manifestId || Date.now().toString();
+    await saveBuildVersion(appId, buildVersion, manifestHash);
+    
+    // ─────────────────────────────────────────────────────────────────────
     // STEP 6: UPLOAD TO GITHUB
     // ─────────────────────────────────────────────────────────────────────
     const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
@@ -1943,8 +2331,14 @@ async function checkGameManifest(game, index, total) {
       depots: depots,
       uploadResult: uploadResult,
       gameInfo: gameInfo,
+      localization: localization, // ✨ Include Vietnamese localization
       failed: false
     });
+    
+    // Save localization to MongoDB
+    if (localization?.isLocalized) {
+      await saveLocalizationToMongo(appId, localization);
+    }
     
     statistics.totalQueued++;
 

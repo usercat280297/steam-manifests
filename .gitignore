@@ -5,3 +5,4 @@ last_build_state.json
 *.log
 *.lua
 .DS_Store
+.env.local
