@@ -1566,6 +1566,9 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   const dlcValid = dlcDepots.filter(d => d.manifestId && d.manifestId !== '0').length;
   const dlcCompletion = dlcTotal > 0 ? ((dlcValid / dlcTotal) * 100).toFixed(1) : '0.0';
 
+  // Denuvo detection
+  const hasDenuvo = gameInfo?.denuvo === true || /denuvo|anti.?tamper/i.test(gameInfo?.description || '');
+
   const steamStoreUrl = `https://store.steampowered.com/app/${appId}`;
   const steamDbUrl = `https://steamdb.info/app/${appId}`;
 
@@ -1608,23 +1611,22 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
     }
   }
 
-  const embed = {
+    const embed = {
     embeds: [{
       author: {
         name: "dreeeefge đã sử dụng ++ gen",
         icon_url: "https://cdn.discordapp.com/emojis/843169324686409749.png"
       },
       title: `✅ Manifest Generated: ${gameName}`,
-      description: `Successfully generated manifest files for **${gameName}** (${appId})`,
-      color: CONFIG.COLORS.SUCCESS,
-
-      thumbnail: { url: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_184x69.jpg` },
+      description: `Successfully generated manifest files for **${gameName}** (${appId})${hasDenuvo ? '\n\n⚠️ **CÓ DENUVO - CẨN THẬN**' : ''}`,
+      color: hasDenuvo ? 0xFF6B6B : CONFIG.COLORS.SUCCESS,      thumbnail: { url: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_184x69.jpg` },
 
       fields: [
         { name: "🔗 Links", value: linksValue, inline: false },
         { name: "⭐ Reviews", value: gameInfo?.reviews || 'N/A', inline: true },
         { name: "👥 Reviews", value: gameInfo?.reviewCount ? `${gameInfo.reviewCount.toLocaleString()}` : 'N/A', inline: true },
         { name: "💰 Price", value: gameInfo?.price || 'N/A', inline: true },
+        ...(hasDenuvo ? [{ name: "🔒 CẢNH BÁO DENUVO", value: "Game này sử dụng Denuvo Anti-Tamper - Có thể ảnh hưởng tốc độ tải", inline: false }] : []),
         { name: "📦 Manifest Status", value: manifestStatus, inline: false }
       ],
 

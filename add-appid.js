@@ -32,6 +32,20 @@ async function fetchAppDetails(appId) {
   }
 }
 
+function isFreeGame(appInfo) {
+  // Check if game is free-to-play or free on Steam
+  if (!appInfo) return false;
+  
+  // Check if price is free (0) or null for free-to-play games
+  const isFree = appInfo.is_free === true || appInfo.price_overview?.initial === 0 || !appInfo.price_overview;
+  
+  // Check if it's marked as Free to Play in categories or description
+  const isFreeToPlay = /free.?to.?play|f2p/i.test(appInfo.genres?.map(g => g.description).join(' ') || '');
+  const isFreeDemoOrContent = /free|demo|traile/i.test(appInfo.name || '');
+  
+  return isFree || isFreeToPlay || (isFreeDemoOrContent && isFreeToPlay);
+}
+
 async function upsertToMongo(appId, info) {
   if (!MONGODB_URI) throw new Error('MONGODB_URI not set');
   const client = new MongoClient(MONGODB_URI);
@@ -80,58 +94,87 @@ async function promptChoice(question, choices) {
 }
 
 async function notifyManifestBot(appId) {
+  // Delegate to the more robust implementation so we get consistent diagnostics
   if (!MANIFEST_ADMIN_URL) return null;
-  try {
-    const url = MANIFEST_ADMIN_URL.replace(/\/$/, '') + '/process';
-    const headers = { 'Content-Type': 'application/json' };
-    if (MANIFEST_ADMIN_TOKEN) headers['Authorization'] = `Bearer ${MANIFEST_ADMIN_TOKEN}`;
-    // include admin token in the way manifest-bot expects
-    if (MANIFEST_ADMIN_TOKEN) headers['x-admin-token'] = MANIFEST_ADMIN_TOKEN;
-    // Try POST first (include token in body as fallback)
-    const body = { appId: Number(appId) };
-    if (MANIFEST_ADMIN_TOKEN) body.token = MANIFEST_ADMIN_TOKEN;
-    const res = await axios.post(url, body, { headers, timeout: 10000 });
-    return res.data || res.status;
-  } catch (err) {
-    // Try GET fallback
-    try {
-      let url = MANIFEST_ADMIN_URL.replace(/\/$/, '') + `/process?appId=${encodeURIComponent(appId)}`;
-      if (MANIFEST_ADMIN_TOKEN) url += `&token=${encodeURIComponent(MANIFEST_ADMIN_TOKEN)}`;
-      const res2 = await axios.get(url, { timeout: 8000 });
-      return res2.data || res2.status;
-    } catch (err2) {
-      // log more detailed errors for diagnosis
-      console.warn('Notify manifest-bot failed (POST):', err.response?.status || err.message || err);
-      if (err.response && err.response.data) console.warn('Response data:', JSON.stringify(err.response.data));
-      console.warn('Notify manifest-bot failed (GET):', err2.response?.status || err2.message || err2);
-      if (err2.response && err2.response.data) console.warn('GET response data:', JSON.stringify(err2.response.data));
-      return null;
-    }
-  }
+  console.log('DEBUG: MANIFEST_ADMIN_URL present:', !!MANIFEST_ADMIN_URL, 'MANIFEST_ADMIN_TOKEN present:', !!MANIFEST_ADMIN_TOKEN);
+  return await notifyManifestBotWith(MANIFEST_ADMIN_URL, MANIFEST_ADMIN_TOKEN, appId);
 }
 
 async function notifyManifestBotWith(urlBase, token, appId) {
   if (!urlBase) return null;
+  // normalize URL: ensure protocol present
+  let base = String(urlBase).trim();
+  if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
+
   try {
-    const url = urlBase.replace(/\/$/, '') + '/process';
+    const url = base.replace(/\/$/, '') + '/process';
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     if (token) headers['x-admin-token'] = token;
     const body = { appId: Number(appId) };
     if (token) body.token = token;
+
+    // optional quick connectivity probe (ignore failures)
+    try { await axios.head(base, { timeout: 3000 }); } catch (e) {}
+
     const res = await axios.post(url, body, { headers, timeout: 10000 });
     return res.data || res.status;
   } catch (err) {
+    // fallback to GET with query params
     try {
-      let url = urlBase.replace(/\/$/, '') + `/process?appId=${encodeURIComponent(appId)}`;
-      if (token) url += `&token=${encodeURIComponent(token)}`;
-      const res2 = await axios.get(url, { timeout: 8000 });
-      return res2.data || res2.status;
+      // Try API style: POST /process/:appId
+      const urlProcessId = base.replace(/\/$/, '') + `/process/${encodeURIComponent(appId)}`;
+      try {
+        const resPid = await axios.post(urlProcessId, {}, { headers: { 'x-admin-token': token }, timeout: 8000 });
+        return resPid.data || resPid.status;
+      } catch (pidErr) {
+        // If POST /process/:appId isn't allowed, try GET equivalent
+        try {
+          const resPidGet = await axios.get(urlProcessId, { headers: { 'x-admin-token': token }, timeout: 8000 });
+          return resPidGet.data || resPidGet.status;
+        } catch (pidGetErr) {
+          // continue to other fallbacks
+        }
+      }
+
+      // Next, try POST /games (add endpoint expects name+appId) or /games/add
+      const urlGamesAdd = base.replace(/\/$/, '') + '/games/add';
+      try {
+        const resGamesAdd = await axios.post(urlGamesAdd, { appId: Number(appId), name: `App ${appId}` }, { headers: { 'Content-Type': 'application/json', 'x-admin-token': token }, timeout: 8000 });
+        return resGamesAdd.data || resGamesAdd.status;
+      } catch (gamesAddErr) {
+        // POST /games (generic) as last resort
+        try {
+          const urlGames = base.replace(/\/$/, '') + '/games';
+          const resGames = await axios.post(urlGames, { appId: Number(appId), name: `App ${appId}` }, { headers: { 'Content-Type': 'application/json', 'x-admin-token': token }, timeout: 8000 });
+          return resGames.data || resGames.status;
+        } catch (gamesErr) {
+          // give up and report
+        }
+      }
     } catch (err2) {
-      console.warn('Notify manifest-bot failed (POST):', err.response?.status || err.message || err);
-      if (err.response && err.response.data) console.warn('Response data:', JSON.stringify(err.response.data));
-      console.warn('Notify manifest-bot failed (GET):', err2.response?.status || err2.message || err2);
-      if (err2.response && err2.response.data) console.warn('GET response data:', JSON.stringify(err2.response.data));
+      // rich diagnostics
+      console.warn('Notify manifest-bot POST failed:');
+      if (err) {
+        if (err.code) console.warn('  code:', err.code);
+        if (err.message) console.warn('  message:', err.message);
+        if (err.response) {
+          console.warn('  status:', err.response.status);
+          try { console.warn('  data:', JSON.stringify(err.response.data)); } catch (e) { console.warn('  data: [unserializable]'); }
+        }
+        if (err.stack) console.debug('  stack:', err.stack);
+      }
+
+      console.warn('Notify manifest-bot GET fallback failed:');
+      if (err2) {
+        if (err2.code) console.warn('  code:', err2.code);
+        if (err2.message) console.warn('  message:', err2.message);
+        if (err2.response) {
+          console.warn('  status:', err2.response.status);
+          try { console.warn('  data:', JSON.stringify(err2.response.data)); } catch (e) { console.warn('  data: [unserializable]'); }
+        }
+        if (err2.stack) console.debug('  stack:', err2.stack);
+      }
       return null;
     }
   }
@@ -164,6 +207,18 @@ async function notifyDiscord(appId, name) {
     const info = await fetchAppDetails(appId);
     if (!info) console.warn('Warning: Could not fetch details (app may be restricted/unavailable). Will still add appId to DB.');
     else console.log('Found:', info.name);
+
+    // Check if game is free-to-play (skip if free unless forced)
+    if (info && isFreeGame(info)) {
+      const isForced = process.argv.includes('--force-free') || process.argv.includes('-ff');
+      if (!isForced) {
+        console.log('\n❌ GAME KHÔNG HỢP LỆ: Game này là Free-to-Play hoặc miễn phí trên Steam');
+        console.log('   Tên: ' + info.name);
+        console.log('   Chỉ xử lý các game có phí (Paid games)\n');
+        console.log('Để thêm dù là game free, hãy dùng flag: --force-free\n');
+        process.exit(1);
+      }
+    }
 
     if (!MONGODB_URI) {
       console.error('MONGODB_URI not configured. Set env var and retry.');
@@ -236,9 +291,54 @@ async function notifyDiscord(appId, name) {
     }
 
     if (MANIFEST_ADMIN_URL) {
+      // show configured URL (mask token)
+      try {
+        const masked = MANIFEST_ADMIN_URL.replace(/(https?:\/\/)/i, '$1').replace(/:\/\/.+@/, '://[masked@]');
+        console.log('Configured MANIFEST_ADMIN_URL:', masked);
+      } catch (e) { console.log('Configured MANIFEST_ADMIN_URL present'); }
+
       console.log('Requesting manifest-bot to process this app...');
       const r = await notifyManifestBot(appId);
       console.log('Manifest-bot responded:', r);
+
+      // If notify failed, offer interactive retry with alternate URL/token
+      if (r == null) {
+        const tryNow = (await ask('Notification to configured MANIFEST_ADMIN_URL failed. Try alternate URL/token now? (y/N): ')).trim().toLowerCase();
+        if (tryNow.startsWith('y')) {
+          const url = (await ask('Enter manifest-bot base URL (e.g. https://your-app.up.railway.app): ')).trim();
+          const token = (await ask('Enter ADMIN token for manifest-bot (leave empty if none): ')).trim();
+          if (!url) {
+            console.log('No URL provided, skipping notification.');
+          } else {
+            console.log('Requesting manifest-bot to process this app (alternate URL)...');
+            const r2 = await notifyManifestBotWith(url, token || null, appId);
+            console.log('Manifest-bot responded:', r2);
+            const save = (await ask('Save this MANIFEST_ADMIN_URL and token to a local .env.local for future runs? (y/N): ')).trim().toLowerCase();
+            if (save.startsWith('y')) {
+              const fs = require('fs');
+              const envFile = '.env.local';
+              let content = '';
+              content += `MANIFEST_ADMIN_URL=${url}\n`;
+              if (token) content += `MANIFEST_ADMIN_TOKEN=${token}\n`;
+              try {
+                fs.writeFileSync(envFile, content, { encoding: 'utf8', flag: 'w' });
+                console.log(`Saved to ${envFile}`);
+                try {
+                  const gi = '.gitignore';
+                  let giContent = '';
+                  if (fs.existsSync(gi)) giContent = fs.readFileSync(gi, 'utf8');
+                  if (!giContent.includes(envFile)) {
+                    fs.appendFileSync(gi, `\n${envFile}\n`, { encoding: 'utf8' });
+                    console.log(`Appended ${envFile} to .gitignore`);
+                  }
+                } catch (e) {}
+              } catch (e) {
+                console.warn('Failed to save .env.local:', e.message || e);
+              }
+            }
+          }
+        }
+      }
     } else {
       // Interactive fallback: prompt user to optionally notify a running bot now
       const want = (await ask('MANIFEST_ADMIN_URL not configured. Do you want to notify a running manifest-bot now? (y/N): ')).trim().toLowerCase();
