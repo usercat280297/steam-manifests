@@ -8,12 +8,26 @@
     <Description>Vietnamese localization patch for DEVOUR game using BepInEx</Description>
     <Authors>Vietnamese Community</Authors>
     <LangVersion>latest</LangVersion>
+    <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
+  <!-- Pre-build task to download dependencies -->
+  <Target Name="CheckDependencies" BeforeTargets="Build">
+    <Exec Command="cmd /c if not exist lib (echo Downloading BepInEx dependencies... &amp; download-dependencies.bat)" ContinueOnError="true" />
+  </Target>
+
   <ItemGroup>
-    <!-- BepInEx base - includes harmony -->
-    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
-    <PackageReference Include="UnityEngine.Modules.CoreModule" Version="2020.3.35" />
+    <!-- Reference local BepInEx DLLs (downloaded by download-dependencies.bat) -->
+    <Reference Include="BepInEx">
+      <HintPath>lib\BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx.Harmony">
+      <HintPath>lib\BepInEx.Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>lib\0Harmony.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

@@ -64,40 +64,63 @@ Write-Host ""
 # STEP 3: Check for plugin DLL
 # ============================================================
 Write-Host "[Step 3] Checking for plugin DLL..." -ForegroundColor Yellow
-$PLUGIN_DLL = "$SCRIPT_DIR\bin\Release\net472\DevourVietnamesePatch.dll"
+$PLUGIN_DLL = $null
 
-if (Test-Path $PLUGIN_DLL) {
-    Write-Host "[OK] Plugin found: $PLUGIN_DLL" -ForegroundColor Green
-} else {
-    if ($SkipBuild) {
-        Write-Host "[SKIP] Plugin build skipped" -ForegroundColor Yellow
-    } else {
-        Write-Host "[BUILD] Need to compile plugin first..." -ForegroundColor Yellow
+# Check multiple locations
+$possiblePaths = @(
+    "$SCRIPT_DIR\bin\Release\net472\DevourVietnamesePatch.dll",
+    "$SCRIPT_DIR\DevourVietnamesePatch.dll",
+    "$SCRIPT_DIR\..\devour_vi_bepinex_plugin\bin\Release\net472\DevourVietnamesePatch.dll"
+)
+
+foreach ($path in $possiblePaths) {
+    if (Test-Path $path) {
+        $PLUGIN_DLL = $path
+        Write-Host "[OK] Plugin found: $PLUGIN_DLL" -ForegroundColor Green
+        break
+    }
+}
+
+if (-not $PLUGIN_DLL) {
+    Write-Host "[INFO] Plugin DLL not found locally" -ForegroundColor Yellow
+    Write-Host "[DOWNLOAD] Attempting to download from GitHub Actions..." -ForegroundColor Yellow
+    
+    Push-Location $SCRIPT_DIR
+    try {
+        # Try to download DLL from GitHub Actions artifacts
+        & node download-dll.js
         
-        # Check for dotnet
-        $dotnetCheck = (Get-Command dotnet -ErrorAction SilentlyContinue)
-        if (-not $dotnetCheck) {
-            Write-Host "[ERROR] .NET SDK not found" -ForegroundColor Red
-            Write-Host "Please install: https://dotnet.microsoft.com/en-us/download" -ForegroundColor Red
-            Write-Host "After installing, run this script again" -ForegroundColor Yellow
-            exit 1
-        }
-        
-        Write-Host "[COMPILE] Building plugin..." -ForegroundColor Yellow
-        Push-Location $SCRIPT_DIR
-        try {
-            & dotnet build -c Release 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "[ERROR] Compilation failed" -ForegroundColor Red
-                Write-Host "Try manually:" -ForegroundColor Yellow
-                Write-Host "  cd $SCRIPT_DIR" -ForegroundColor Yellow
-                Write-Host "  dotnet build -c Release" -ForegroundColor Yellow
+        # Check again after download
+        if (Test-Path "$SCRIPT_DIR\DevourVietnamesePatch.dll") {
+            $PLUGIN_DLL = "$SCRIPT_DIR\DevourVietnamesePatch.dll"
+            Write-Host "[OK] Downloaded plugin" -ForegroundColor Green
+        } else {
+            Write-Host "[INFO] Attempting local build instead..." -ForegroundColor Yellow
+            
+            # Check for dotnet
+            $dotnetCheck = (Get-Command dotnet -ErrorAction SilentlyContinue)
+            if (-not $dotnetCheck) {
+                Write-Host "[ERROR] .NET SDK not found" -ForegroundColor Red
+                Write-Host "Please install: https://dotnet.microsoft.com/en-us/download" -ForegroundColor Red
                 exit 1
             }
-            Write-Host "[OK] Plugin compiled" -ForegroundColor Green
-        } finally {
-            Pop-Location
+            
+            Write-Host "[COMPILE] Building plugin locally..." -ForegroundColor Yellow
+            & dotnet build -c Release 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $PLUGIN_DLL = "$SCRIPT_DIR\bin\Release\net472\DevourVietnamesePatch.dll"
+                Write-Host "[OK] Plugin compiled" -ForegroundColor Green
+            } else {
+                Write-Host "[ERROR] Compilation failed" -ForegroundColor Red
+                exit 1
+            }
         }
+    } catch {
+        Write-Host "[ERROR] Cannot find or build plugin" -ForegroundColor Red
+        Write-Host "Error: $_" -ForegroundColor Red
+        exit 1
+    } finally {
+        Pop-Location
     }
 }
 Write-Host ""
