@@ -2005,6 +2005,54 @@ async function checkAllGames() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 (async () => {
+  // ────────────────────────────────────────────────────────────────────────
+  // START EXPRESS CONTROL SERVER IMMEDIATELY (don't wait for MongoDB/games)
+  // This ensures Railway's health checks pass and control endpoint is available
+  // ────────────────────────────────────────────────────────────────────────
+  
+  let app;
+  let controlServer;
+  
+  if (ADMIN_TOKEN) {
+    try {
+      const express = require('express');
+      const bodyParser = require('body-parser');
+      app = express();
+      app.use(bodyParser.json());
+
+      // Minimal health check
+      app.get('/', (req, res) => {
+        res.json({
+          status: 'running',
+          message: 'Steam Manifest Bot Control Server',
+          uptime: process.uptime(),
+          botReady: games.length > 0
+        });
+      });
+
+      app.post('/process', async (req, res) => {
+        // Will be properly implemented below once bot is ready
+        const token = req.headers['x-admin-token'] || req.query.token || req.body.token;
+        if (!token || token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Forbidden' });
+        const appId = req.body.appId || req.query.appId;
+        if (!appId) return res.status(400).json({ error: 'appId required' });
+        
+        // Queue for processing
+        res.json({ status: 'queued', appId });
+      });
+
+      // START SERVER IMMEDIATELY (synchronously)
+      const port = Number(process.env.PORT || process.env.CONTROL_PORT || 3000);
+      controlServer = app.listen(port, '0.0.0.0', () => {
+        console.log(`🔧 Control server listening on 0.0.0.0:${port}`);
+      });
+    } catch (err) {
+      console.warn('Control server failed to start:', err.message);
+    }
+  }
+
+  // Now do all the async startup operations (these don't block the control server)
+  
   console.log('\n' + '═'.repeat(70));
   console.log('🚀 STEAM MANIFEST BOT v4.0 - ULTRA DETAILED');
   console.log('═'.repeat(70));
@@ -2107,15 +2155,9 @@ async function checkAllGames() {
     }
   }
 
-  // Optional control endpoint: use POST /process { "appId": 12345 } to trigger a single processing run
-  // Secured by ADMIN_TOKEN env var. If ADMIN_TOKEN is not set, HTTP server will not start.
-  if (ADMIN_TOKEN) {
+  // Add enhanced control endpoints to the Express server (setup at beginning)
+  if (app && ADMIN_TOKEN) {
     try {
-      const express = require('express');
-      const bodyParser = require('body-parser');
-      const app = express();
-      app.use(bodyParser.json());
-
       app.post('/process', async (req, res) => {
         try {
           // Debug: log incoming control requests (mask token presence)
@@ -2272,14 +2314,9 @@ async function checkAllGames() {
         res.send(html);
       });
 
-      // Prefer platform-provided PORT (e.g., Railway) then CONTROL_PORT, fallback 3000
-      const port = Number(process.env.PORT || process.env.CONTROL_PORT || 3000);
-      // Bind explicitly to 0.0.0.0 to ensure external connections (and IPv4) can connect
-      controlServer = app.listen(port, '0.0.0.0', () => {
-        console.log(`🔧 Control server listening on 0.0.0.0:${port} (ADMIN_TOKEN set). Using process.env.PORT=${process.env.PORT || ''} process.env.CONTROL_PORT=${process.env.CONTROL_PORT || ''}`);
-      });
+      console.log('✅ Enhanced control endpoints added (/process, /games, /api/games, /admin)');
     } catch (err) {
-      console.warn('Control server failed to start (missing dependency express?). To enable, `npm install express body-parser`');
+      console.warn('Failed to add enhanced endpoints:', err.message);
     }
   }
 
