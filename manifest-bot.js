@@ -39,8 +39,8 @@ const CONFIG = {
   
   // ⏰ Timing Configuration
   CHECK_INTERVAL: 12 * 60 * 60 * 1000,    // Check all games every 12 hours
-  MESSAGE_INTERVAL: 3 * 1000,             // Send Discord messages every 3 seconds (faster queue processing)
-  MESSAGES_PER_BATCH: 1,                  // Process 1 message per interval (increase for faster sending)
+  MESSAGE_INTERVAL: 10 * 1000,            // Send Discord messages every 10 seconds (avoid spam)
+  MESSAGES_PER_BATCH: 1,                  // Process 1 message per interval (keep at 1 for reliability)
   STEAM_DELAY: 2000,                      // 2 seconds between Steam API calls
   STEAMDB_DELAY: 5000,                    // 5 seconds for SteamDB (more strict)
   STEAMCMD_DELAY: 1500,                   // 1.5 seconds for SteamCMD API
@@ -2350,24 +2350,33 @@ async function checkGameManifest(game, index, total) {
     const uploadResult = await uploadToGitHub(fileName, luaContent, name, appId);
     
     // ─────────────────────────────────────────────────────────────────────
-    // STEP 7: QUEUE DISCORD NOTIFICATION
+    // STEP 7: QUEUE DISCORD NOTIFICATION (WITH DEDUPLICATION & VALIDATION)
     // ─────────────────────────────────────────────────────────────────────
-    messageQueue.push({
-      gameName: name,
-      appId: appId,
-      depots: depots,
-      uploadResult: uploadResult,
-      gameInfo: gameInfo,
-      localization: localization, // ✨ Include Vietnamese localization
-      failed: false
-    });
+    // Check if already in queue (prevent duplicates)
+    const alreadyQueued = messageQueue.some(msg => msg.appId === appId && !msg.failed);
     
-    // Save localization to MongoDB
-    if (localization?.isLocalized) {
-      await saveLocalizationToMongo(appId, localization);
+    if (alreadyQueued) {
+      console.log(`   ⚠️  Already queued, skipping duplicate`);
+    } else if (!gameInfo?.description || gameInfo.description.includes('N/A') || gameInfo.description.trim() === '') {
+      console.log(`   ⚠️  No valid description (N/A), skipping Discord notification`);
+    } else {
+      messageQueue.push({
+        gameName: name,
+        appId: appId,
+        depots: depots,
+        uploadResult: uploadResult,
+        gameInfo: gameInfo,
+        localization: localization, // ✨ Include Vietnamese localization
+        failed: false
+      });
+      
+      // Save localization to MongoDB
+      if (localization?.isLocalized) {
+        await saveLocalizationToMongo(appId, localization);
+      }
+      
+      statistics.totalQueued++;
     }
-    
-    statistics.totalQueued++;
 
     const status = uploadResult?.downloadUrl ? '[GitHub ✓]' : '[Local only]';
     console.log(`   ✅ Queued ${status}`);
