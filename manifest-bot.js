@@ -1750,6 +1750,11 @@ async function createDiscordEmbed(gameName, appId, depots, uploadResult, gameInf
   // ═══════════════════════════════════════════════════════════════════════
   let linksValue = `[Steam Store](${steamStoreUrl}) | [SteamDB](${steamDbUrl})`;
   if (uploadResult?.downloadUrl) linksValue += ` | [📥 Download .lua](${uploadResult.downloadUrl})`;
+  
+  // 🇻🇳 Add Vietnamese translation download for Devour
+  if (appId === '1274570' || appId === 1274570) {
+    linksValue += ` | [🇻🇳 Download Vietnamese](https://github.com/usercat280297/steam-manifests/releases/download/Devour-Viet-v1.0/Devour_Vietnamese_Translation.zip)`;
+  }
 
   // ═══════════════════════════════════════════════════════════════════════
   // 🔍 HEADER IMAGE: prefer gameInfo, then verify Steam header, otherwise try SteamDB og:image
