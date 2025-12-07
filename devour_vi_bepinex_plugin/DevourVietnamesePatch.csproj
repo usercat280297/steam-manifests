@@ -12,10 +12,29 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
-  <!-- Note: Compile only works in GitHub Actions environment with BepInEx pre-installed -->
-  <!-- For local development, use GitHub Actions artifacts instead -->
+  <!-- Reference local BepInEx DLLs from lib folder -->
   <ItemGroup>
-    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <Reference Include="BepInEx.Core">
+      <HintPath>lib\BepInEx.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx">
+      <HintPath>lib\BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx.Harmony">
+      <HintPath>lib\BepInEx.Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>lib\BepInEx.Unity.IL2CPP.dll</HintPath>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>lib\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>lib\Il2CppInterop.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>lib\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>
