@@ -1,0 +1,28 @@
+{
+  "projectId": "1274570_1765094979323",
+  "appId": 1274570,
+  "gameName": "Devour",
+  "targetLanguage": "vi",
+  "sourceLanguage": "en",
+  "status": "active",
+  "createdAt": "2025-12-07T08:09:39.325Z",
+  "updatedAt": "2025-12-07T08:09:39.325Z",
+  "progress": {
+    "totalStrings": 0,
+    "translatedStrings": 0,
+    "reviewedStrings": 0,
+    "percentComplete": 0
+  },
+  "files": [],
+  "contributors": [
+    "HỏaLôi"
+  ],
+  "notes": "",
+  "description": "Vietnamese translation for Devour",
+  "supportedFormats": [
+    "json",
+    "csv",
+    "po"
+  ],
+  "_id": "6935364302c80e61d181a424"
+}

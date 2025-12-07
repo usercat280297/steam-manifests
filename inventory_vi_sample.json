@@ -1,0 +1,206 @@
+{
+  "1": {
+    "name": "Đêm Không Trăng",
+    "description": "Trang phục cho Nhà Thuyết Giáo"
+  },
+  "10": {
+    "name": "Tăng Tốc",
+    "description": "Tốc độ di chuyển tăng 30% trong 20 giây sau khi được sống lại"
+  },
+  "100": {
+    "name": "Khả Năng Thích Ứng",
+    "description": "Tỷ lệ chính xác tăng 15%"
+  },
+  "101": {
+    "name": "Quả Bom Nhỏ",
+    "description": "Quá bom nhỏ để tấn công địch"
+  },
+  "102": {
+    "name": "Quả Bom Lớn",
+    "description": "Quả bom lớn mạnh hơn"
+  },
+  "103": {
+    "name": "Đạn Nhanh",
+    "description": "Đạn bắn nhanh hơn bình thường"
+  },
+  "104": {
+    "name": "Khiên Cứng",
+    "description": "Giảm thiệt hại nhận được 20%"
+  },
+  "105": {
+    "name": "Dò Tìm",
+    "description": "Cải thiện khả năng tìm kiếm vật phẩm"
+  },
+  "106": {
+    "name": "Tái Sinh",
+    "description": "Hồi phục 50% máu khi hoàn thành cấp độ"
+  },
+  "107": {
+    "name": "Bắt Đầu Nhanh",
+    "description": "Bắt đầu cấp độ với 25% sức khỏe bổ sung"
+  },
+  "108": {
+    "name": "Khí Độc",
+    "description": "Phát hành khí độc để gây tổn thương địch"
+  },
+  "109": {
+    "name": "Lửa",
+    "description": "Sử dụng lửa để tấn công các kẻ địch"
+  },
+  "11": {
+    "name": "Kỹ Năng Ảo Thuật",
+    "description": "Sát thương tăng 25%"
+  },
+  "110": {
+    "name": "Nước",
+    "description": "Sử dụng nước để kiểm soát lực"
+  },
+  "111": {
+    "name": "Gió",
+    "description": "Tạo bão gió để lấy điểm số cao"
+  },
+  "112": {
+    "name": "Đất",
+    "description": "Tăng cường khả năng phòng thủ"
+  },
+  "113": {
+    "name": "Sét",
+    "description": "Gây tổn thương nhiều địch cùng lúc"
+  },
+  "114": {
+    "name": "Tuyết",
+    "description": "Đông cứng kẻ địch tạm thời"
+  },
+  "115": {
+    "name": "Công Tác Điện",
+    "description": "Giảm thời gian làm lạnh"
+  },
+  "116": {
+    "name": "Dây Chuyền Ngoài Hành Tinh",
+    "description": "Mở khóa các kỹ năng bí ẩn"
+  },
+  "117": {
+    "name": "Mũ Bảo Hiểm Cổ Điển",
+    "description": "Giáp bảo vệ truyền thống"
+  },
+  "118": {
+    "name": "Áo Giáp Sắt",
+    "description": "Giáp mạnh với sức bền cao"
+  },
+  "119": {
+    "name": "Quần Chun",
+    "description": "Trang phục nhẹ tăng tốc độ"
+  },
+  "12": {
+    "name": "Cảm Ứng Lạnh",
+    "description": "Khả năng nhìn thấy kẻ địch dễ dàng hơn"
+  },
+  "120": {
+    "name": "Giày Thể Thao",
+    "description": "Tăng tốc độ di chuyển 15%"
+  },
+  "121": {
+    "name": "Dây Đai Ngoặm",
+    "description": "Tăng sức mạnh tấn công 10%"
+  },
+  "122": {
+    "name": "Vòng Tay Bí Ẩn",
+    "description": "Tăng mọi chỉ số thống kê"
+  },
+  "123": {
+    "name": "Nhẫn Quyền Lực",
+    "description": "Gây tổn thương gấp đôi cho kẻ địch"
+  },
+  "124": {
+    "name": "Túi Ma Pháp",
+    "description": "Mang thêm vật phẩm tiêu hao"
+  },
+  "125": {
+    "name": "Đèn Pin",
+    "description": "Soi sáng diện tích rộng hơn"
+  },
+  "126": {
+    "name": "Chìa Khóa Cổ Xưa",
+    "description": "Mở khóa cửa bí ẩn trong mỗi cấp độ"
+  },
+  "127": {
+    "name": "Sách Bùa Chú",
+    "description": "Tăng hiệu quả phép thuật 20%"
+  },
+  "128": {
+    "name": "Bình Nước Suối",
+    "description": "Tái sinh một phần máu"
+  },
+  "129": {
+    "name": "Bánh Mì Ổn Định",
+    "description": "Lấy lại 30% máu toàn bộ"
+  },
+  "13": {
+    "name": "Đấu Tranh",
+    "description": "Giảm thời gian hồi phục kỹ năng"
+  },
+  "130": {
+    "name": "Quả Cam",
+    "description": "Tất cả kỹ năng được cải thiện tạm thời"
+  },
+  "131": {
+    "name": "Hạt Các Tông",
+    "description": "Tăng độ chính xác bắn súng"
+  },
+  "132": {
+    "name": "Mật Ong",
+    "description": "Lấy lại tất cả máu trong trận chiến"
+  },
+  "133": {
+    "name": "Dưa Chuột",
+    "description": "Tăng tốc độ ăn uống"
+  },
+  "134": {
+    "name": "Cà Rốt",
+    "description": "Cải thiện tầm nhìn trong bóng tối"
+  },
+  "135": {
+    "name": "Cà Chua",
+    "description": "Tăng tất cả chỉ số 10%"
+  },
+  "136": {
+    "name": "Nho",
+    "description": "Tăng tốc độ di chuyển tạm thời"
+  },
+  "137": {
+    "name": "Dâu Tây",
+    "description": "Hồi phục máu liên tục trong trận chiến"
+  },
+  "138": {
+    "name": "Lựu Đạn",
+    "description": "Bắn nổ tạo tổn thương diện rộng"
+  },
+  "139": {
+    "name": "Mâm Xôi",
+    "description": "Tăng cộng đồng tập trung"
+  },
+  "14": {
+    "name": "Dòng Máu Tối",
+    "description": "Hồi phục máu qua mỗi lần tấn công"
+  },
+  "140": {
+    "name": "Nước Cam",
+    "description": "Xóa tất cả hiệu ứng tiêu cực"
+  },
+  "141": {
+    "name": "Sinh Tố",
+    "description": "Khôi phục năng lượng nhanh hơn"
+  },
+  "142": {
+    "name": "Trà Xanh",
+    "description": "Tăng độ bền vật phẩm sử dụng"
+  },
+  "143": {
+    "name": "Nước Nóng",
+    "description": "Tấn công với nhiệt độ cao"
+  },
+  "144": {
+    "name": "Đá Lạnh",
+    "description": "Đông cứng địch trong khoảng thời gian"
+  }
+}

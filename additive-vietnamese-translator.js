@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+/**
+ * Vietnamese Translator - Additive Method
+ * Adds new fields (name_vi, display_type_vi) instead of replacing original
+ */
+
+const fs = require('fs');
+
+// Vietnamese translations dictionary
+const translations = {
+  'Moonless Night': 'Đêm Không Trăng',
+  'Claws Out': 'Móng Vuốt Ra',
+  'Cyberpunk': 'Cyberpunk',
+  'Patriot': 'Yêu Nước',
+  'Plague Doctor': 'Bác Sĩ Dịch Hạch',
+  'Sepia': 'Sepia',
+  'Trad Goth': 'Goth Truyền Thống',
+  'Casual Friday': 'Thứ Sáu Thoải Mái',
+  'Zombie': 'Zombie',
+  'Chef': 'Đầu Bếp',
+  'Green Machine': 'Máy Xanh',
+  'Cyber Samurai': 'Samurai Điện Tử',
+  'Disco Inferno': 'Địa Ngục Disco',
+  'Neon Assassin': 'Sát Thủ Neon',
+  'Neon Shuriken': 'Shuriken Neon',
+  'Void': 'Khoảng Trống',
+  'Neon Oni': 'Oni Neon',
+  'Neon Cyberpunk': 'Cyberpunk Neon',
+  'Feeling Blue': 'Cảm Thấy Buồn',
+  'Role Model': 'Hình Mẫu',
+  'Elementary': 'Cơ Bản',
+  'Summer Loving': 'Yêu Mùa Hè',
+  'Big Hitter': 'Người Đánh Mạnh',
+  'Front Crawl': 'Bơi Sấp',
+  'Hollow': 'Rỗng',
+  'Jingle Hells': 'Điểm Giáng Sinh',
+  'Principal Dancer': 'Vũ Công Chính',
+  'Screamer': 'Người Hét Lớn',
+  'Stitched Up': 'Khâu Kín',
+  'Here Comes The Bride': 'Cô Dâu Đang Tới',
+  'Daddy Cool': 'Bố Lạnh Lùng',
+  'Troublemaker': 'Tên Gây Rối',
+  'Cheongsam': 'Áo Dài Trung Hoa',
+  'Little Helper': 'Trợ Thủ Nhỏ',
+  'Inpatient': 'Bệnh Nhân Nội Trú',
+  'Lone Ranger': 'Tay Súng Cô Độc',
+  'Keymaster': 'Bậc Thầy Chìa Khóa',
+  'Stay Back': 'Ở Lại Phía Sau',
+  'Teamwork': 'Làm Việc Nhóm',
+  'Patient': 'Bệnh Nhân',
+  'Inspired': 'Được Truyền Cảm Hứng',
+  'Gangnam Style': 'Phong Cách Gangnam',
+  'Macarena': 'Macarena',
+  'Snake Hip-Hop': 'Snake Hip-Hop',
+  'Twerk': 'Twerk',
+  'Twist': 'Twist',
+  'Glitterbomb': 'Bom Lấp Lánh',
+  'Stone': 'Đá',
+  'Daddy Cool': 'Bố Lạnh Lùng',
+  'Troublemaker': 'Tên Gây Rối',
+  'Cheongsam': 'Áo Dài Trung Hoa',
+  'Cat': 'Mèo',
+  'Speed Walker': 'Người Đi Bộ Nhanh',
+  'Tamed': 'Được Thuần Hóa',
+  'Timber': 'Gỗ',
+  'Fallout': 'Hậu Quả',
+  'Aftershock': 'Dư Chấn',
+  'First Responder': 'Người Ứng Cứu Đầu Tiên',
+  'Pug': 'Chó Pug',
+};
+
+const displayTypeTranslations = {
+  'Outfit': 'Trang Phục',
+  'Perk': 'Kỹ Năng',
+  'Emote': 'Biểu Cảm',
+  'Flashlight': 'Đèn Pin',
+  'Pet': 'Vật Nuôi',
+};
+
+async function translateAdditive() {
+  try {
+    console.log('🌍 Vietnamese Translator (Additive Method)\n');
+
+    const backupPath = 'D:\\SteamLibrary\\steamapps\\common\\Devour\\inventory.json.backup';
+    const gamePath = 'D:\\SteamLibrary\\steamapps\\common\\Devour\\inventory.json';
+
+    const data = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+
+    let translated = 0;
+    let displayTypeChanged = 0;
+
+    // Add Vietnamese fields WITHOUT modifying originals
+    Object.keys(data).forEach(key => {
+      if (isNaN(key)) return;
+
+      const item = data[key];
+
+      // Add Vietnamese name as new field
+      if (translations[item.name]) {
+        item.name_vi = translations[item.name];
+        console.log(`  ✓ "${item.name}" → "${item.name_vi}"`);
+        translated++;
+      }
+
+      // Add Vietnamese display_type as new field
+      if (displayTypeTranslations[item.display_type]) {
+        item.display_type_vi = displayTypeTranslations[item.display_type];
+        displayTypeChanged++;
+      }
+    });
+
+    // Write to game folder
+    const jsonStr = JSON.stringify(data, null, 2);
+    fs.writeFileSync(gamePath, jsonStr, { encoding: 'utf8' });
+
+    console.log(`\n✅ Translation Complete (Additive)!`);
+    console.log(`   📝 Items with Vietnamese: ${translated}/129`);
+    console.log(`   🏷️  Display types added: ${displayTypeChanged}`);
+    console.log(`   💾 Original fields preserved`);
+    console.log(`   📄 File: ${gamePath}`);
+    console.log(`\n🎮 Open game to test!`);
+
+  } catch (error) {
+    console.error('❌ Error:', error.message);
+    process.exit(1);
+  }
+}
+
+translateAdditive();
