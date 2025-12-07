@@ -1,0 +1,63 @@
+name: Build BepInEx Plugin
+
+on:
+  push:
+    paths:
+      - 'devour_vi_bepinex_plugin/**'
+      - '.github/workflows/build-bepinex.yml'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'devour_vi_bepinex_plugin/**'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+      
+      - name: Download BepInEx 5.4.21
+        working-directory: ./devour_vi_bepinex_plugin
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BepInEx/BepInEx/releases/download/v5.4.21/BepInEx_5.4.21.zip"
+          $zip = "BepInEx.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, ".")
+          # Copy core DLLs to lib folder
+          if (-not (Test-Path "lib")) { mkdir "lib" | Out-Null }
+          Copy-Item -Path "BepInEx\core\*.dll" -Destination "lib\" -Force
+          Remove-Item $zip -Force
+          Write-Host "BepInEx DLLs downloaded and extracted"
+      
+      - name: Restore dependencies
+        working-directory: ./devour_vi_bepinex_plugin
+        run: dotnet restore
+      
+      - name: Build Release
+        working-directory: ./devour_vi_bepinex_plugin
+        run: dotnet build -c Release --no-restore
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: DevourVietnamesePatch
+          path: devour_vi_bepinex_plugin/bin/Release/net472/DevourVietnamesePatch.dll
+          retention-days: 30
+      
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: devour_vi_bepinex_plugin/bin/Release/net472/DevourVietnamesePatch.dll
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
