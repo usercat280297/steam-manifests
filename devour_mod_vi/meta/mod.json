@@ -1,0 +1,22 @@
+{
+  "name": "DEVOUR Vietnamese Localization",
+  "version": "1.0.0",
+  "author": "Vietnamese Community",
+  "description": "Complete Vietnamese translation mod for DEVOUR game",
+  "language": "vi_VN",
+  "game": "DEVOUR",
+  "appId": 1274570,
+  "createdAt": "2025-12-07T10:25:20.209Z",
+  "features": [
+    "Full Vietnamese UI translation",
+    "Character & outfit names in Vietnamese",
+    "Menu & settings translated",
+    "Game strings translated"
+  ],
+  "instructions": [
+    "1. Download this mod folder",
+    "2. Copy to your game mods directory or mod manager",
+    "3. Enable Vietnamese mod in game settings",
+    "4. Restart game"
+  ]
+}

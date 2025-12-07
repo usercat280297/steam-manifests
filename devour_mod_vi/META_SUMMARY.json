@@ -1,0 +1,19 @@
+{
+  "timestamp": "2025-12-07T10:25:20.224Z",
+  "modPath": "E:\\Đức Hải\\steam-manifest-bot\\devour_mod_vi",
+  "translatedItems": 131,
+  "dictinarySize": 54,
+  "files": {
+    "inventory": "content/vi/inventory_vi.json",
+    "strings": "content/vi/strings.json",
+    "metadata": "meta/mod.json",
+    "launcher": "launcher.js",
+    "guide": "README_VI.md"
+  },
+  "translations": {
+    "total": 131,
+    "characters": 5,
+    "items": 131,
+    "uiStrings": 54
+  }
+}

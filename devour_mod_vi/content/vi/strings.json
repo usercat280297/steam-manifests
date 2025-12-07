@@ -1,0 +1,33 @@
+{
+  "ui": {
+    "menu": {
+      "main": "Menu Chính",
+      "start": "Bắt Đầu Game",
+      "continue": "Tiếp Tục",
+      "settings": "Cài Đặt",
+      "exit": "Thoát"
+    },
+    "buttons": {
+      "ok": "Được",
+      "cancel": "Hủy",
+      "save": "Lưu",
+      "load": "Tải",
+      "yes": "Có",
+      "no": "Không"
+    }
+  },
+  "game": {
+    "stats": {
+      "health": "Sức Khỏe",
+      "sanity": "Lý Trí",
+      "level": "Cấp Độ",
+      "experience": "Kinh Nghiệm"
+    },
+    "difficulty": {
+      "easy": "Dễ",
+      "normal": "Bình Thường",
+      "hard": "Khó",
+      "insane": "Điên Loạn"
+    }
+  }
+}

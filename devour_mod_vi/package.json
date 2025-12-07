@@ -1,0 +1,19 @@
+{
+  "name": "devour-vietnamese-mod",
+  "version": "1.0.0",
+  "description": "Vietnamese localization mod for DEVOUR game",
+  "main": "launcher.js",
+  "scripts": {
+    "enable": "node launcher.js enable",
+    "disable": "node launcher.js disable"
+  },
+  "keywords": [
+    "devour",
+    "game",
+    "mod",
+    "vietnamese",
+    "localization"
+  ],
+  "author": "Vietnamese Community",
+  "license": "CC0"
+}
