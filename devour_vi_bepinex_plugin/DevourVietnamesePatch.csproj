@@ -12,22 +12,10 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
-  <!-- Pre-build task to download dependencies -->
-  <Target Name="CheckDependencies" BeforeTargets="Build">
-    <Exec Command="cmd /c if not exist lib (echo Downloading BepInEx dependencies... &amp; download-dependencies.bat)" ContinueOnError="true" />
-  </Target>
-
+  <!-- Note: Compile only works in GitHub Actions environment with BepInEx pre-installed -->
+  <!-- For local development, use GitHub Actions artifacts instead -->
   <ItemGroup>
-    <!-- Reference local BepInEx DLLs (downloaded by download-dependencies.bat) -->
-    <Reference Include="BepInEx">
-      <HintPath>lib\BepInEx.dll</HintPath>
-    </Reference>
-    <Reference Include="BepInEx.Harmony">
-      <HintPath>lib\BepInEx.Harmony.dll</HintPath>
-    </Reference>
-    <Reference Include="0Harmony">
-      <HintPath>lib\0Harmony.dll</HintPath>
-    </Reference>
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
   </ItemGroup>
 
 </Project>
