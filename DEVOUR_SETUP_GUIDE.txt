@@ -1,0 +1,102 @@
+
+╔════════════════════════════════════════════════════════════════════╗
+║          🎮 DEVOUR - GreenLuma Setup Guide                         ║
+╚════════════════════════════════════════════════════════════════════╝
+
+📋 MANIFEST FILES LOCATION
+═════════════════════════════════════════════════════════════════════
+
+Path: E:\Đức Hải\steam-manifest-bot\greenluma-manifests
+
+Files:
+  ✅ 1274570.lua       (English version)
+  ✅ 1274570_vi.lua    (Vietnamese version 🇻🇳)
+
+═════════════════════════════════════════════════════════════════════
+
+🚀 INSTALLATION STEPS
+═════════════════════════════════════════════════════════════════════
+
+1️⃣  DOWNLOAD & INSTALL GreenLuma
+   
+   If not already installed, download from:
+   → https://github.com/nbulischeck/GreenLuma/releases
+   
+   Download the latest release and install to:
+   C:\Program Files\GreenLuma
+
+2️⃣  COPY MANIFEST FILES
+
+   Copy the .lua files to GreenLuma manifests folder:
+   
+   E:\Đức Hải\steam-manifest-bot\greenluma-manifests
+   
+   Or use GreenLuma GUI to import manifests.
+
+3️⃣  OPEN GreenLuma & ADD GAME
+
+   a) Open GreenLuma application
+   b) Click "Add Game"
+   c) Enter AppID: 1274570
+   d) Select manifest:
+      - For English items: 1274570.lua
+      - For Vietnamese items: 1274570_vi.lua 🇻🇳
+
+4️⃣  UPDATE & PLAY
+
+   a) Click "Update" button
+   b) Wait for process to complete
+   c) Launch Devour from Steam
+   d) All items unlocked! ✨
+
+═════════════════════════════════════════════════════════════════════
+
+📝 NOTES
+═════════════════════════════════════════════════════════════════════
+
+✓ Make sure Devour is NOT running when updating
+✓ GreenLuma needs admin rights to work
+✓ First launch after update may take longer
+✓ All unlocked items are local-only (single-player)
+
+═════════════════════════════════════════════════════════════════════
+
+🎯 WHAT YOU GET
+═════════════════════════════════════════════════════════════════════
+
+Choose English (1274570.lua):
+  ✅ All Outfits unlocked (60+)
+  ✅ All Perks unlocked (50+)
+  ✅ All Emotes unlocked (20+)
+  📝 Names in English
+
+Or Choose Vietnamese (1274570_vi.lua):
+  ✅ All Outfits unlocked (60+)
+  ✅ All Perks unlocked (50+)
+  ✅ All Emotes unlocked (20+)
+  📝 Names in Vietnamese (Tiếng Việt) 🇻🇳
+
+═════════════════════════════════════════════════════════════════════
+
+❓ TROUBLESHOOTING
+═════════════════════════════════════════════════════════════════════
+
+Q: GreenLuma says "File not found"
+A: Check manifest folder path and restart GreenLuma
+
+Q: Items not unlocked after restart
+A: Verify manifest in GreenLuma is selected and "Updated"
+   Restart Devour (not just reload)
+
+Q: Can't install GreenLuma on C:\
+A: Use portable version or install to different drive
+   Edit manifest path in GreenLuma settings
+
+Q: Want to switch between English/Vietnamese?
+A: Just select different manifest in GreenLuma and update again
+
+═════════════════════════════════════════════════════════════════════
+
+Created: 17:11:19 7/12/2025
+Script: devour-deploy.js
+Version: 1.0
