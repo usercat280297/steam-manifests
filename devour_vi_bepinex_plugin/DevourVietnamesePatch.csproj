@@ -7,14 +7,13 @@
     <Version>1.0.0</Version>
     <Description>Vietnamese localization patch for DEVOUR game using BepInEx</Description>
     <Authors>Vietnamese Community</Authors>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- BepInEx NuGet packages -->
+    <!-- BepInEx base - includes harmony -->
     <PackageReference Include="BepInEx.Core" Version="5.4.21" />
-    <PackageReference Include="HarmonyX" Version="2.10.1" />
-    <PackageReference Include="UnityEngine.Modules.UI" Version="2020.3.35" />
-    <PackageReference Include="UnityEngine.Modules.TextRenderingModule" Version="2020.3.35" />
+    <PackageReference Include="UnityEngine.Modules.CoreModule" Version="2020.3.35" />
   </ItemGroup>
 
 </Project>
