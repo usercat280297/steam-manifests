@@ -12,13 +12,10 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
-  <!-- Reference local BepInEx DLLs from lib folder -->
+  <!-- Reference local BepInEx DLLs from lib folder (BepInEx 6.0) -->
   <ItemGroup>
     <Reference Include="BepInEx.Core">
       <HintPath>lib\BepInEx.Core.dll</HintPath>
-    </Reference>
-    <Reference Include="BepInEx">
-      <HintPath>lib\BepInEx.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx.Harmony">
       <HintPath>lib\BepInEx.Harmony.dll</HintPath>
@@ -26,15 +23,22 @@
     <Reference Include="BepInEx.Unity.IL2CPP">
       <HintPath>lib\BepInEx.Unity.IL2CPP.dll</HintPath>
     </Reference>
+    <Reference Include="BepInEx.Unity.Common">
+      <HintPath>lib\BepInEx.Unity.Common.dll</HintPath>
+    </Reference>
     <Reference Include="0Harmony">
       <HintPath>lib\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
       <HintPath>lib\Il2CppInterop.Runtime.dll</HintPath>
     </Reference>
-    <Reference Include="UnityEngine.CoreModule">
-      <HintPath>lib\UnityEngine.CoreModule.dll</HintPath>
-    </Reference>
   </ItemGroup>
+
+  <!-- Allow missing UnityEngine references (IL2CPP stubs will be generated at runtime) -->
+  <Target Name="BeforeBuild">
+    <PropertyGroup>
+      <NoWarn>$(NoWarn);CS0246;CS0234;CS0012;CS0433</NoWarn>
+    </PropertyGroup>
+  </Target>
 
 </Project>
